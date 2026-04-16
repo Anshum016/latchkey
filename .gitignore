@@ -18,3 +18,9 @@ latchkey.yml
 .env
 .env.*
 docs/examples/latchkey.docker.yaml
+
+# Repo knowledge / non-essential publish artifacts
+docs/
+CLAUDE.md
+claude.md
+contract-note.txt
