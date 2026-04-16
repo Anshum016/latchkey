@@ -1,0 +1,23 @@
+{
+  "name": "latchkey",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @latchkey/core && npm run build --workspace @latchkey/mcp && npm run build --workspace @latchkey/webhook",
+    "init": "npm run build && node packages/mcp/build/cli/latchkey.js init",
+    "start:latchkey": "npm run build && node packages/mcp/build/cli/latchkey.js start",
+    "status:latchkey": "node packages/mcp/build/cli/latchkey.js status",
+    "validate:latchkey": "node packages/mcp/build/cli/latchkey.js validate",
+    "approve:latchkey": "node packages/mcp/build/cli/latchkey.js approve",
+    "test:email-approval": "node scripts/email-approval-test.mjs",
+    "typecheck": "npm run typecheck --workspace @latchkey/core && npm run build --workspace @latchkey/core && npm run typecheck --workspace @latchkey/mcp && npm run typecheck --workspace @latchkey/webhook",
+    "test": "npm run test --workspace @latchkey/core && npm run test --workspace @latchkey/mcp && npm run test --workspace @latchkey/webhook"
+  },
+  "devDependencies": {
+    "@types/node": "^22.12.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@latchkey/mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "build/mcp-entry.js",
+  "types": "build/mcp-entry.d.ts",
+  "bin": {
+    "latchkey": "build/cli/latchkey.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node build/runtime-test.js"
+  },
+  "dependencies": {
+    "@latchkey/core": "file:../core",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.76"
+  }
+}

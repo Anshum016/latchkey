@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "build",
+    "rootDir": "src"
+  },
+  "include": [
+    "src/mcp-entry.ts",
+    "src/runtime/**/*",
+    "src/cli/**/*",
+    "src/mock-server-v2.ts",
+    "src/runtime-test.ts"
+  ],
+  "exclude": ["node_modules", "build"]
+}

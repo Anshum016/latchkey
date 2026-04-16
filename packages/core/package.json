@@ -1,0 +1,22 @@
+{
+  "name": "@latchkey/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node build/test.js"
+  },
+  "dependencies": {
+    "@slack/webhook": "^7.0.8",
+    "better-sqlite3": "^12.8.0",
+    "resend": "^6.10.0",
+    "yaml": "^2.8.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
+  }
+}

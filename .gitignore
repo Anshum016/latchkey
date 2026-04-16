@@ -1,0 +1,20 @@
+node_modules/
+packages/*/node_modules/
+dist/
+packages/*/build/
+*.db
+*.db-*
+*.log
+.latchkey/
+coverage/
+.claude/
+
+# Local machine / developer-only helpers
+scripts/latchkey-claude-launcher.mjs
+
+# Local secret-bearing configs
+latchkey.yaml
+latchkey.yml
+.env
+.env.*
+docs/examples/latchkey.docker.yaml
