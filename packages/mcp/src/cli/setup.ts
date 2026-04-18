@@ -220,7 +220,7 @@ function installClaudeCodeConfig(configPath: string): string {
   const absoluteConfigPath = path.resolve(configPath);
   const mcpServers = existing.mcpServers ?? {};
   mcpServers.latchkey = {
-    command: "latchkey",
+    command: "latchkey-proxy",
     args: ["--config", absoluteConfigPath, "start"]
   };
 
@@ -243,7 +243,7 @@ function installClaudeDesktopConfig(configPath: string): string {
   const absoluteConfigPath = path.resolve(configPath);
   const mcpServers = existing.mcpServers ?? {};
   mcpServers.latchkey = {
-    command: "latchkey",
+    command: "latchkey-proxy",
     args: ["--config", absoluteConfigPath, "start"]
   };
 

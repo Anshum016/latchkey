@@ -56,7 +56,7 @@ Three npm workspaces, ESM throughout (`"type": "module"`):
 
 ```
 packages/core/      @latchkey/core     - shared domain logic, no MCP dependency
-packages/mcp/       @latchkey/mcp      - MCP proxy server + CLI (latchkey)
+packages/mcp/       @latchkey/mcp      - MCP proxy server + CLI (latchkey-proxy)
 packages/webhook/   @latchkey/webhook  - Express webhook receiver (latchkey-webhook)
 ```
 
@@ -71,7 +71,7 @@ packages/webhook/   @latchkey/webhook  - Express webhook receiver (latchkey-webh
 - `ApprovalService` (`approval-service.ts`) — orchestrates the approval lifecycle: auto-approve or notify+wait; polls SQLite every 250 ms; calls `execute()` after approval; timeout always denies
 - `SQLiteApprovalStore` (`storage.ts`) — `better-sqlite3` persistence for `ApprovalRequest` and `AuditEvent` records
 - `NotificationService` / `createNotificationService` (`notification.ts`) — dispatches to Slack Incoming Webhooks or Resend email; all three formats (plain text, Slack blocks, email HTML) include truncated tool parameters to help the approver make an informed decision
-- `loadConfig` / `saveConfig` / `assertAIConfigured` (`config.ts`) — reads `latchkey.yaml` (or `.yml`) from cwd, falling back to `~/.latchkey/config.json`; env vars override file values **except** `ai.apiKey`: the config file value takes priority over `LATCHKEY_AI_API_KEY` / `ANTHROPIC_API_KEY` so `latchkey init` works without manual env setup. `assertAIConfigured(config)` throws `AIClassifierNotConfiguredError` with a clear message if `config.ai.apiKey` is missing — called by `startMcpProxyServer` before constructing the AI classifier.
+- `loadConfig` / `saveConfig` / `assertAIConfigured` (`config.ts`) — reads `latchkey.yaml` (or `.yml`) from cwd, falling back to `~/.latchkey/config.json`; env vars override file values **except** `ai.apiKey`: the config file value takes priority over `LATCHKEY_AI_API_KEY` / `ANTHROPIC_API_KEY` so `latchkey-proxy init` works without manual env setup. `assertAIConfigured(config)` throws `AIClassifierNotConfiguredError` with a clear message if `config.ai.apiKey` is missing — called by `startMcpProxyServer` before constructing the AI classifier.
 - `parseSecurityRules` / `loadSecurityRules` (`policy.ts`) — loads custom `SecurityRule[]` from a `SECURITY.md` file in the project dir; rules are encoded as a JSON array in either an HTML comment block (`<!--latchkey-rules:start-->`) or a fenced code block (`` ```latchkey-rules ``); each rule has `pattern` (regex), `scoreDelta`, and `reason`
 
 **`@latchkey/mcp`** (`mcp-entry.ts` + `runtime/proxy.ts`):
