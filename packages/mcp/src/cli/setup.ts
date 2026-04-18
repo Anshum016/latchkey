@@ -1,9 +1,7 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { fileURLToPath } from "node:url";
 import { getDefaultConfigPath, loadConfig, saveConfig } from "@latchkey/core";
 import type {
   DockerUpstreamServerConfig,
@@ -12,6 +10,15 @@ import type {
   PolicyRule,
   UpstreamServerConfig
 } from "@latchkey/core";
+import {
+  type DiscoveredMcpServer,
+  type DiscoverySource,
+  discoverMcpServers,
+  getClaudeCodeSettingsPath,
+  getClaudeDesktopConfigPath,
+  removeServersFromClaudeCodeConfig,
+  removeServersFromClaudeDesktopConfig
+} from "./mcp-discovery.js";
 
 interface ClaudeDesktopConfig {
   mcpServers?: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
@@ -78,34 +85,6 @@ function normalizeChannelAnswer(answer: string, fallback: NotificationChannelKin
   return fallback;
 }
 
-interface DiscoveredMcpServer {
-  name: string;
-  command: string;
-  args: string[];
-  env?: Record<string, string> | undefined;
-}
-
-function readClaudeDesktopMcpServers(): DiscoveredMcpServer[] {
-  const configPath = getClaudeDesktopConfigPath();
-  if (!fs.existsSync(configPath)) {
-    return [];
-  }
-
-  try {
-    const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as ClaudeDesktopConfig;
-    return Object.entries(raw.mcpServers ?? {})
-      .filter(([name]) => name !== "latchkey")
-      .map(([name, cfg]) => ({
-        name,
-        command: cfg.command,
-        args: cfg.args ?? [],
-        ...(cfg.env ? { env: cfg.env } : {})
-      }));
-  } catch {
-    return [];
-  }
-}
-
 function discoveredToUpstream(server: DiscoveredMcpServer): UpstreamServerConfig {
   return {
     name: server.name,
@@ -121,42 +100,25 @@ function formatCommandPreview(command: string, args: string[]): string {
   return full.length > 64 ? `${full.slice(0, 61)}…` : full;
 }
 
-function removeServersFromClaudeDesktopConfig(names: string[]): void {
-  const configPath = getClaudeDesktopConfigPath();
-  if (!fs.existsSync(configPath) || names.length === 0) {
-    return;
-  }
-
-  try {
-    const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as ClaudeDesktopConfig;
-    const mcpServers = { ...(raw.mcpServers ?? {}) };
-    for (const name of names) {
-      delete mcpServers[name];
-    }
-    fs.writeFileSync(configPath, `${JSON.stringify({ ...raw, mcpServers }, null, 2)}\n`, "utf-8");
-  } catch (error) {
-    console.warn(
-      `  Warning: could not remove servers from Claude Desktop config: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-  }
-}
 
 async function configureUpstreams(
   rl: readline.Interface,
   existing: UpstreamServerConfig[],
-  discovered: DiscoveredMcpServer[]
-): Promise<{ upstreams: UpstreamServerConfig[]; removeFromDesktop: string[] }> {
+  discovered: DiscoveredMcpServer[],
+  discoverySource: DiscoverySource
+): Promise<{ upstreams: UpstreamServerConfig[]; removeFromSource: string[] }> {
+  const sourceName =
+    discoverySource === "claude-code" ? "Claude Code" : "Claude Desktop";
+
   if (discovered.length === 0) {
     if (existing.length === 0) {
-      console.log("\nNo MCP servers found in Claude Desktop. Configuring manually.");
+      console.log("\nNo MCP servers found in Claude Code or Claude Desktop. Configuring manually.");
     }
-    return { upstreams: await configurePrimaryUpstream(rl, existing), removeFromDesktop: [] };
+    return { upstreams: await configurePrimaryUpstream(rl, existing), removeFromSource: [] };
   }
 
   const existingNames = new Set(existing.map((u) => u.name));
-  console.log(`\nDiscovered ${discovered.length} MCP server(s) in Claude Desktop:`);
+  console.log(`\nDiscovered ${discovered.length} MCP server(s) in ${sourceName}:`);
   discovered.forEach((server, i) => {
     const tag = existingNames.has(server.name) ? " (already wrapped)" : "";
     console.log(
@@ -171,11 +133,11 @@ async function configureUpstreams(
   ).trim().toLowerCase();
 
   if (answer === "m" || answer === "manual") {
-    return { upstreams: await configurePrimaryUpstream(rl, existing), removeFromDesktop: [] };
+    return { upstreams: await configurePrimaryUpstream(rl, existing), removeFromSource: [] };
   }
 
   if (answer === "skip") {
-    return { upstreams: existing, removeFromDesktop: [] };
+    return { upstreams: existing, removeFromSource: [] };
   }
 
   let selected: DiscoveredMcpServer[];
@@ -191,7 +153,7 @@ async function configureUpstreams(
 
   if (selected.length === 0) {
     console.log("No valid selection — configuring manually.");
-    return { upstreams: await configurePrimaryUpstream(rl, existing), removeFromDesktop: [] };
+    return { upstreams: await configurePrimaryUpstream(rl, existing), removeFromSource: [] };
   }
 
   const upstreams = selected.map(discoveredToUpstream);
@@ -199,7 +161,7 @@ async function configureUpstreams(
   const shouldRemove = parseBooleanAnswer(
     await ask(
       rl,
-      "Remove selected servers from Claude Desktop to prevent direct bypasses? (yes/no)",
+      `Remove selected servers from ${sourceName} to prevent direct bypasses? (yes/no)`,
       "yes"
     ),
     true
@@ -207,7 +169,7 @@ async function configureUpstreams(
 
   return {
     upstreams,
-    removeFromDesktop: shouldRemove ? selected.map((s) => s.name) : []
+    removeFromSource: shouldRemove ? selected.map((s) => s.name) : []
   };
 }
 
@@ -243,23 +205,9 @@ function buildStarterRules(upstreamName: string): PolicyRule[] {
   ];
 }
 
-function getClaudeDesktopConfigPath(): string {
-  switch (os.platform()) {
-    case "win32":
-      return path.join(process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"), "Claude", "claude_desktop_config.json");
-    case "darwin":
-      return path.join(os.homedir(), "Library", "Application Support", "Claude", "claude_desktop_config.json");
-    default:
-      return path.join(os.homedir(), ".config", "Claude", "claude_desktop_config.json");
-  }
-}
-
-function getClaudeCodeUserConfigPath(): string {
-  return path.join(os.homedir(), ".claude", "settings.json");
-}
 
 function installClaudeCodeConfig(configPath: string): string {
-  const settingsPath = getClaudeCodeUserConfigPath();
+  const settingsPath = getClaudeCodeSettingsPath();
   const directory = path.dirname(settingsPath);
   if (!fs.existsSync(directory)) {
     fs.mkdirSync(directory, { recursive: true });
@@ -269,16 +217,11 @@ function installClaudeCodeConfig(configPath: string): string {
     ? (JSON.parse(fs.readFileSync(settingsPath, "utf-8")) as ClaudeCodeSettings)
     : {};
 
-  const cliEntryPath = getCliEntryPath();
-  if (!fs.existsSync(cliEntryPath)) {
-    throw new Error(`Latchkey CLI was not found at ${cliEntryPath}. Run npm run build before installing Claude Code config.`);
-  }
-
   const absoluteConfigPath = path.resolve(configPath);
   const mcpServers = existing.mcpServers ?? {};
   mcpServers.latchkey = {
-    command: process.execPath,
-    args: [cliEntryPath, "--config", absoluteConfigPath, "start"]
+    command: "latchkey",
+    args: ["--config", absoluteConfigPath, "start"]
   };
 
   const nextConfig: ClaudeCodeSettings = { ...existing, mcpServers };
@@ -286,12 +229,8 @@ function installClaudeCodeConfig(configPath: string): string {
   return settingsPath;
 }
 
-function getCliEntryPath(): string {
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "latchkey.js");
-}
-
 function installClaudeDesktopConfig(configPath: string): string {
-  const claudeConfigPath = getClaudeDesktopConfigPath();
+  const claudeConfigPath = getClaudeDesktopConfigPath(); // from mcp-discovery
   const directory = path.dirname(claudeConfigPath);
   if (!fs.existsSync(directory)) {
     fs.mkdirSync(directory, { recursive: true });
@@ -301,16 +240,11 @@ function installClaudeDesktopConfig(configPath: string): string {
     ? (JSON.parse(fs.readFileSync(claudeConfigPath, "utf-8")) as ClaudeDesktopConfig)
     : {};
 
-  const cliEntryPath = getCliEntryPath();
-  if (!fs.existsSync(cliEntryPath)) {
-    throw new Error(`Latchkey CLI was not found at ${cliEntryPath}. Run npm run build before installing Claude Desktop config.`);
-  }
-
   const absoluteConfigPath = path.resolve(configPath);
   const mcpServers = existing.mcpServers ?? {};
   mcpServers.latchkey = {
-    command: process.execPath,
-    args: [cliEntryPath, "--config", absoluteConfigPath, "start"]
+    command: "latchkey",
+    args: ["--config", absoluteConfigPath, "start"]
   };
 
   const nextConfig: ClaudeDesktopConfig = {
@@ -417,16 +351,28 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
     console.log(`Config file: ${configPath}\n`);
 
     const existing = loadConfig(configPath);
+
+    // Step 1: Anthropic API key
+    const apiKey = (
+      await ask(rl, "Enter your Anthropic API key (used for AI risk evaluation)", existing.ai.apiKey)
+    ).trim();
+    if (!apiKey) {
+      throw new Error("Anthropic API key is required.");
+    }
+
+    // Step 2: Notification channel
     const channel = normalizeChannelAnswer(
       await ask(rl, "Notification channel (slack/gmail)", getChannelPromptValue(existing.channel)),
       existing.channel
     );
 
-    const discovered = readClaudeDesktopMcpServers();
-    const { upstreams: upstreamServers, removeFromDesktop } = await configureUpstreams(
+    // Claude Code is the primary source; Claude Desktop is the fallback
+    const { servers: discovered, source: discoverySource } = discoverMcpServers();
+    const { upstreams: upstreamServers, removeFromSource } = await configureUpstreams(
       rl,
       existing.upstreamServers,
-      discovered
+      discovered,
+      discoverySource
     );
 
     const defaultProtectedUpstream = getDefaultProtectedUpstream(upstreamServers, existing.rules);
@@ -454,7 +400,8 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
       databasePath: existing.databasePath,
       toolNameMode: existing.toolNameMode,
       upstreamServers,
-      rules: buildStarterRules(protectedUpstream.trim())
+      rules: buildStarterRules(protectedUpstream.trim()),
+      ai: { apiKey, model: existing.ai.model, timeoutMs: existing.ai.timeoutMs }
     };
 
     if (channel === "slack") {
@@ -484,8 +431,12 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
     const claudeConfigPath = installClaude ? installClaudeDesktopConfig(configPath) : null;
     const claudeCodeConfigPath = installClaudeCode ? installClaudeCodeConfig(configPath) : null;
 
-    if (removeFromDesktop.length > 0) {
-      removeServersFromClaudeDesktopConfig(removeFromDesktop);
+    if (removeFromSource.length > 0) {
+      if (discoverySource === "claude-code") {
+        removeServersFromClaudeCodeConfig(removeFromSource);
+      } else if (discoverySource === "claude-desktop") {
+        removeServersFromClaudeDesktopConfig(removeFromSource);
+      }
     }
 
     console.log("\nSaved configuration:");
@@ -503,8 +454,9 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
       console.log(`  Claude Code config:    ${claudeCodeConfigPath}`);
     }
 
-    if (removeFromDesktop.length > 0) {
-      console.log(`  Removed from Claude Desktop: ${removeFromDesktop.join(", ")}`);
+    if (removeFromSource.length > 0) {
+      const sourceLabel = discoverySource === "claude-code" ? "Claude Code" : "Claude Desktop";
+      console.log(`  Removed from ${sourceLabel}: ${removeFromSource.join(", ")}`);
     }
 
     console.log("\nNext steps:");

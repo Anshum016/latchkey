@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const _require = createRequire(import.meta.url);
 import {
@@ -35,6 +36,7 @@ Usage:
   latchkey [--config ./latchkey.yaml] serve
   latchkey [--config ./latchkey.yaml] init
   latchkey [--config ./latchkey.yaml] setup
+  latchkey [--config ./latchkey.yaml] doctor
   latchkey [--config ./latchkey.yaml] validate
   latchkey [--config ./latchkey.yaml] status
   latchkey [--config ./latchkey.yaml] approve <token-or-code> <allow|deny>
@@ -134,9 +136,12 @@ async function runScore(commandArgs: string[], configPath: string | undefined): 
 }
 
 function getWebhookEntryPath(): string {
-  // Resolve via Node module resolution so this works both in the monorepo
-  // (file: workspace link) and when installed from npm (node_modules).
-  // @latchkey/webhook main resolves to build/index.js; server.js is in the same dir.
+  // Bundled install: webhook.js lives alongside latchkey.js in bin/
+  const siblingPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "webhook.js");
+  if (fs.existsSync(siblingPath)) {
+    return siblingPath;
+  }
+  // Monorepo dev: resolve via workspace symlink in node_modules
   try {
     const webhookMain = _require.resolve("@latchkey/webhook");
     return path.join(path.dirname(webhookMain), "server.js");
@@ -236,6 +241,60 @@ async function runApprove(identifier: string, decision: string, configPath?: str
   console.log(`Resolved ${resolved.request.code} -> ${decision}.`);
 }
 
+async function runDoctor(configPath?: string): Promise<void> {
+  console.log("\nLatchkey Doctor\n");
+  let allGood = true;
+
+  function pass(msg: string): void { console.log(`✓ ${msg}`); }
+  function fail(msg: string, hint: string): void {
+    console.log(`✗ ${msg}\n  → ${hint}`);
+    allGood = false;
+  }
+
+  let config: ReturnType<typeof loadConfig> | undefined;
+  try {
+    config = loadConfig(configPath);
+    pass("Config loaded");
+  } catch (error) {
+    fail("Config could not be loaded", "Run: latchkey init");
+    console.log("\nRun `latchkey init` to create a configuration.\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  if (config.ai.apiKey?.trim()) {
+    pass("Anthropic API key configured");
+  } else {
+    fail("Anthropic API key not configured", "Run: latchkey init  (or set ANTHROPIC_API_KEY env var)");
+  }
+
+  const channelOk =
+    (config.channel === "slack" && !!config.slackWebhookUrl) ||
+    (config.channel === "email" && !!config.userEmail && !!config.resendApiKey);
+  if (channelOk) {
+    pass(`Notification channel: ${config.channel}`);
+  } else {
+    fail(
+      `Notification channel not fully configured (${config.channel})`,
+      "Run: latchkey init to complete notification setup"
+    );
+  }
+
+  if (config.upstreamServers.length > 0) {
+    pass(`Upstream servers: ${config.upstreamServers.map((u) => u.name).join(", ")}`);
+  } else {
+    fail("No upstream MCP servers configured", "Run: latchkey init to add an MCP server to proxy");
+  }
+
+  console.log();
+  if (allGood) {
+    console.log("All checks passed — run `latchkey start` to launch the proxy.\n");
+  } else {
+    console.log("Some checks failed — run `latchkey init` to fix them.\n");
+    process.exitCode = 1;
+  }
+}
+
 async function runValidate(configPath?: string): Promise<void> {
   const config = loadConfig(configPath);
   console.log("Latchkey config is valid.");
@@ -285,6 +344,9 @@ async function main(): Promise<void> {
       case "init":
       case "setup":
         await runSetup(configPath);
+        return;
+      case "doctor":
+        await runDoctor(configPath);
         return;
       case "validate":
         await runValidate(configPath);

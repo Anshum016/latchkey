@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__latchkey__read_text_file",
+      "mcp__latchkey__latchkey_write_file",
+      "Bash(npm view *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)"
+    ]
+  }
+}

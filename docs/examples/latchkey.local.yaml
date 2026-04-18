@@ -1,0 +1,31 @@
+notifications:
+  channel: slack
+  slackWebhookUrl: https://hooks.slack.com/services/REPLACE/ME
+  webhookBaseUrl: http://localhost:3001
+  timeoutMs: 60000
+
+upstreams:
+  - name: filesystem
+    transport: stdio
+    command: npx
+    args:
+      - -y
+      - "@modelcontextprotocol/server-filesystem"
+      - .
+    cwd: .
+
+rules:
+  - action: "delete_*"
+    approval: required
+    reason: Deletes always need approval.
+
+  - tool: "write_*"
+    upstream: filesystem
+    params:
+      - path: path
+        contains: ".env"
+    approval: required
+    reason: Environment files stay human-reviewed.
+
+proxy:
+  toolNameMode: transparent

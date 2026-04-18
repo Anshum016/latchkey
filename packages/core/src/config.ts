@@ -426,7 +426,14 @@ export function assertAIConfigured(config: LatchkeyConfig): void {
 export function loadConfig(configPath?: string): LatchkeyConfig {
   const resolvedPath = resolveConfigPath(configPath);
   const fileConfig = readStoredConfigFile(resolvedPath);
-  const merged = { ...fileConfig, ...getEnvOverrides() };
+  const envOverrides = getEnvOverrides();
+
+  // config.ai.apiKey takes priority over env vars so latchkey init works without manual env setup
+  if (fileConfig.ai?.apiKey && envOverrides.ai) {
+    envOverrides.ai = { ...envOverrides.ai, apiKey: fileConfig.ai.apiKey };
+  }
+
+  const merged = { ...fileConfig, ...envOverrides };
   const parsed = storedConfigSchema.parse(merged);
   return normalizeConfig(parsed);
 }

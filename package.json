@@ -1,11 +1,35 @@
 {
-  "name": "latchkey",
-  "private": true,
+  "name": "latchkey-ai",
+  "version": "0.1.0",
+  "description": "MCP proxy server that intercepts dangerous AI agent tool calls for human approval via Slack or email",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "ai",
+    "agent",
+    "safety",
+    "approval",
+    "proxy",
+    "claude",
+    "latchkey"
+  ],
+  "bin": {
+    "latchkey": "bin/latchkey.js"
+  },
+  "files": [
+    "bin/"
+  ],
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
     "build": "npm run build --workspace @latchkey/core && npm run build --workspace @latchkey/mcp && npm run build --workspace @latchkey/webhook",
+    "bundle": "node scripts/bundle.mjs",
+    "prepublishOnly": "npm run build && npm run bundle",
     "init": "npm run build && node packages/mcp/build/cli/latchkey.js init",
     "start:latchkey": "npm run build && node packages/mcp/build/cli/latchkey.js start",
     "status:latchkey": "node packages/mcp/build/cli/latchkey.js status",
@@ -15,8 +39,21 @@
     "typecheck": "npm run typecheck --workspace @latchkey/core && npm run build --workspace @latchkey/core && npm run typecheck --workspace @latchkey/mcp && npm run typecheck --workspace @latchkey/webhook",
     "test": "npm run test --workspace @latchkey/core && npm run test --workspace @latchkey/mcp && npm run test --workspace @latchkey/webhook"
   },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@slack/webhook": "^7.0.8",
+    "better-sqlite3": "^12.8.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1",
+    "resend": "^6.10.0",
+    "yaml": "^2.8.3",
+    "zod": "^3.25.76"
+  },
   "devDependencies": {
     "@types/node": "^22.12.0",
+    "esbuild": "^0.25.12",
     "tsx": "^4.21.0",
     "typescript": "^5.8.3"
   }

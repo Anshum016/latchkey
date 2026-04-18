@@ -1,0 +1,35 @@
+notifications:
+  channel: email # Gmail-compatible inbox approvals
+  resendApiKey: REPLACE_ME
+  userEmail: human@example.com
+  webhookBaseUrl: http://localhost:3001
+  timeoutMs: 60000
+
+upstreams:
+  - name: filesystem
+    transport: docker
+    image: ghcr.io/example/filesystem-mcp:latest
+    args:
+      - serve
+    passWorkspace: true
+    workspaceMountPath: /workspace
+    containerCwd: /workspace
+    containerArgs:
+      - --pull=always
+
+rules:
+  - tool: "write_*"
+    upstream: filesystem
+    params:
+      - path: path
+        contains: ".env"
+    approval: required
+    reason: Environment files stay human-reviewed.
+
+  - tool: "delete_*"
+    upstream: filesystem
+    approval: required
+    reason: Filesystem deletes always need approval.
+
+proxy:
+  toolNameMode: transparent
