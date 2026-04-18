@@ -11,13 +11,13 @@ Latchkey is an MCP proxy server that intercepts dangerous AI agent tool calls an
 ## Install
 
 ```bash
-npm install -g latchkey-ai
+npm install -g latchkey-proxy
 ```
 
 or run without installing:
 
 ```bash
-npx latchkey-ai@latest init
+npx latchkey-proxy@latest init
 ```
 
 ## Setup
@@ -99,5 +99,5 @@ The root package bundles all workspace code — only one publish needed:
 
 ```bash
 npm run build && npm run bundle
-npm publish  # publishes latchkey-ai
+npm publish  # publishes latchkey-proxy
 ```

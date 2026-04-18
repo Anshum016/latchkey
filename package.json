@@ -1,5 +1,5 @@
 {
-  "name": "latchkey-ai",
+  "name": "latchkey-proxy",
   "version": "0.1.0",
   "description": "MCP proxy server that intercepts dangerous AI agent tool calls for human approval via Slack or email",
   "license": "MIT",
@@ -18,7 +18,7 @@
     "latchkey"
   ],
   "bin": {
-    "latchkey": "bin/latchkey.js"
+    "latchkey-proxy": "bin/latchkey.js"
   },
   "files": [
     "bin/"

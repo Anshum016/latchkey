@@ -175,16 +175,16 @@ Environment variable overrides: `LATCHKEY_CHANNEL`, `LATCHKEY_SLACK_WEBHOOK_URL`
 
 ## Publishing
 
-The root package (`latchkey-ai`) bundles all workspace code via esbuild into `bin/latchkey.js` and `bin/webhook.js`. Only one package needs to be published — the sub-packages (`@latchkey/core`, `@latchkey/webhook`, `@latchkey/mcp`) do not need to be on npm.
+The root package (`latchkey-proxy`) bundles all workspace code via esbuild into `bin/latchkey.js` and `bin/webhook.js`. Only one package needs to be published — the sub-packages (`@latchkey/core`, `@latchkey/webhook`, `@latchkey/mcp`) do not need to be on npm.
 
 ```bash
 npm run build && npm run bundle
-npm publish   # publishes latchkey-ai
+npm publish   # publishes latchkey-proxy
 ```
 
 `prepublishOnly` runs `npm run build && npm run bundle` automatically. The bundle script is at `scripts/bundle.mjs`. `bin/` is gitignored — it is always generated, never committed.
 
-After publishing, users install with `npm install -g latchkey-ai` or `npx latchkey-ai@latest init`.
+After publishing, users install with `npm install -g latchkey-proxy` or `npx latchkey-proxy@latest init`.
 
 ## TypeScript Rules
 
