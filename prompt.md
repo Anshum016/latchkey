@@ -1,147 +1,127 @@
-Deeply analyze the current Latchkey codebase and identify **exactly how we are currently discovering/fetching MCP servers** during setup and runtime.
+You need to modify the Latchkey MCP discovery logic so it correctly discovers MCP servers configured by Claude Code.
 
-I want you to first understand the current implementation end-to-end before making changes.
+IMPORTANT CONTEXT
 
-## Context
+Currently our discovery logic only reads MCP servers from:
+1. ~/.claude/settings.json
+2. Claude Desktop config
 
-Our product vision is:
+However, Claude Code also stores MCP server configuration inside the file:
 
-* Latchkey should integrate with **Claude Code**
-* We want to fetch MCP servers configured for **Claude Code**, **not Claude Desktop**
-* Right now I suspect the logic may be reading the wrong config source
-* I want a robust implementation that resolves the **correct user-level Claude Code config path dynamically**
-* The solution should be **cross-platform**, **stable**, and should **not fail easily**
+~/.claude.json
 
-## Your tasks
+Inside this file, MCP servers are often stored under a project-specific structure:
 
-### 1. Audit the current implementation
+{
+  "projects": {
+    "<project-path>": {
+      "mcpServers": {
+        "server-name": {
+          "type": "stdio",
+          "command": "...",
+          "args": [...]
+        }
+      }
+    }
+  }
+}
 
-Read the relevant files and explain:
+Example:
 
-* where MCP server discovery currently happens
-* which file path(s) are currently being read
-* whether we are reading Claude Desktop config or Claude Code config
-* how the discovered servers are transformed into Latchkey upstream configs
-* what happens afterward during `latchkey init` and `latchkey start`
+projects["C:/Users/anshu/OneDrive/Desktop/latchkey"].mcpServers.drawio
 
-Focus especially on files like:
+Claude Code loads MCP servers from this location when a project is opened.
 
-* setup/init CLI flow
-* config loading/saving
-* proxy startup/runtime
-* any file path resolution helpers
+OUR CURRENT PROBLEM
 
-I want a precise technical explanation of the current flow before any code changes.
+Latchkey currently cannot discover MCP servers that are stored inside ~/.claude.json under projects[].mcpServers.
 
-### 2. Identify the architecture gap
+Therefore our proxy fails to detect upstream MCP servers when users configure them via Claude Code's built-in MCP UI.
 
-After understanding the current behavior, explain clearly:
+GOAL
 
-* why the current implementation is wrong or incomplete for Claude Code
-* what risks exist if we rely on Claude Desktop config
-* what the correct source of truth should be for **Claude Code user-level MCP servers**
+Extend the discovery system so Latchkey can:
 
-### 3. Implement Claude Code–first MCP discovery
+1. Locate ~/.claude.json
+2. Parse the file safely
+3. Identify the current project path
+4. Extract MCP servers defined under:
 
-Refactor the implementation so that MCP discovery is based on the **Claude Code user-level config**, not Claude Desktop config.
+projects[currentProjectPath].mcpServers
 
-Target source of truth:
+5. Normalize those servers into our internal upstream format
+6. Allow them to be wrapped by Latchkey
 
-* `~/.claude/settings.json`
+IMPORTANT REQUIREMENTS
 
-But do **not** hardcode OS-specific absolute paths unsafely.
-Implement proper dynamic path resolution using Node APIs.
+1. This must NOT break the current discovery logic.
+2. The discovery priority should be:
 
-### 4. Make path resolution robust and cross-platform
+   a) Claude Code project config (~/.claude.json → projects[currentProjectPath].mcpServers)
+   b) Claude Code user config (~/.claude/settings.json)
+   c) Claude Desktop config
+   d) manual configuration
 
-Implement a clean path resolution strategy that works on:
+3. Handle path normalization because project keys may appear as:
 
-* Windows
-* macOS
-* Linux
+   C:\Users\...
+   or
+   C:/Users/...
 
-Use the user home directory dynamically.
+4. Only extract valid MCP servers with:
+   command
+   args
 
-I want code that safely resolves the Claude Code settings path using something like:
+5. Ignore:
+   latchkey
+   latchkey-proxy
+   or any server that would cause recursive proxying.
 
-* `os.homedir()`
-* `path.join(...)`
+6. The new logic should live in:
 
-Do not assume usernames or fixed machine-specific absolute paths.
+packages/mcp/src/cli/mcp-discovery.ts
 
-### 5. Make the discovery logic resilient
+7. Add a new function:
 
-The implementation should not fail abruptly.
+discoverClaudeCodeProjectServers()
 
-Handle cases like:
+which:
 
-* `~/.claude/settings.json` does not exist
-* file exists but contains invalid JSON
-* `mcpServers` key is missing
-* settings file exists but has empty config
-* permission/read issues
+- reads ~/.claude.json
+- determines the current project directory
+- extracts mcpServers
+- returns normalized server configs
 
-In each case:
+8. Integrate this function into the existing:
 
-* fail gracefully
-* return a safe fallback
-* print helpful and actionable error messages
-* do not crash the whole setup flow unless absolutely necessary
+discoverMcpServers()
 
-### 6. Preserve existing user experience where possible
+so project-level servers are discovered first.
 
-If needed, you may keep Claude Desktop config support only as a **secondary fallback/import option**, but the primary discovery logic must be **Claude Code first**.
+9. Add robust error handling:
 
-If you keep fallback support:
+- file missing
+- invalid JSON
+- project not found
+- missing mcpServers
+- malformed server configs
 
-* make the priority order explicit
-* document it in code comments
-* explain why it exists
+10. Add unit tests for:
 
-### 7. Refactor cleanly
+- project path match
+- slash normalization
+- missing file
+- missing project
+- malformed server entries
+- filtering latchkey
 
-I do not want a hacky patch.
+EXPECTED OUTPUT
 
-Please:
+Implement the code changes required for this feature.
 
-* create well-named helper functions
-* separate path resolution from file reading and parsing
-* keep the code readable and production-quality
-* avoid duplication
-* keep compatibility with the existing architecture
+Modify only the necessary files and keep the architecture clean.
 
-### 8. Add validation and tests
-
-Update or add tests for:
-
-* path resolution
-* valid Claude Code settings parsing
-* missing file behavior
-* malformed JSON behavior
-* missing `mcpServers`
-* fallback behavior if implemented
-
-### 9. Output I want from you
-
-After making the changes, provide:
-
-1. A clear explanation of the **old flow**
-2. A clear explanation of the **new flow**
-3. All modified files
-4. Why the new approach is correct for Claude Code
-5. Any remaining edge cases or limitations
-
-## Important constraints
-
-* Do not make assumptions without verifying them in the code
-* First understand the current behavior deeply, then refactor
-* Keep the implementation production-grade
-* Prioritize Claude Code user-level config over Claude Desktop
-* The final behavior should be reliable enough that it does not fail on a fresh machine unnecessarily
-
-If needed, improve naming as part of the refactor so the code clearly reflects:
-
-* Claude Code config
-* Claude Desktop config
-* upstream discovery
-* fallback logic
+Explain:
+- what changes were made
+- why they are safe
+- how discovery order now works

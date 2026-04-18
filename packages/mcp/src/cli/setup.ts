@@ -17,7 +17,8 @@ import {
   getClaudeCodeSettingsPath,
   getClaudeDesktopConfigPath,
   removeServersFromClaudeCodeConfig,
-  removeServersFromClaudeDesktopConfig
+  removeServersFromClaudeDesktopConfig,
+  removeServersFromClaudeCodeProjectConfig
 } from "./mcp-discovery.js";
 
 interface ClaudeDesktopConfig {
@@ -108,6 +109,7 @@ async function configureUpstreams(
   discoverySource: DiscoverySource
 ): Promise<{ upstreams: UpstreamServerConfig[]; removeFromSource: string[] }> {
   const sourceName =
+    discoverySource === "claude-code-project" ? "Claude Code (project)" :
     discoverySource === "claude-code" ? "Claude Code" : "Claude Desktop";
 
   if (discovered.length === 0) {
@@ -432,7 +434,9 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
     const claudeCodeConfigPath = installClaudeCode ? installClaudeCodeConfig(configPath) : null;
 
     if (removeFromSource.length > 0) {
-      if (discoverySource === "claude-code") {
+      if (discoverySource === "claude-code-project") {
+        removeServersFromClaudeCodeProjectConfig(removeFromSource);
+      } else if (discoverySource === "claude-code") {
         removeServersFromClaudeCodeConfig(removeFromSource);
       } else if (discoverySource === "claude-desktop") {
         removeServersFromClaudeDesktopConfig(removeFromSource);
@@ -455,7 +459,9 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
     }
 
     if (removeFromSource.length > 0) {
-      const sourceLabel = discoverySource === "claude-code" ? "Claude Code" : "Claude Desktop";
+      const sourceLabel =
+        discoverySource === "claude-code-project" ? "Claude Code (project)" :
+        discoverySource === "claude-code" ? "Claude Code" : "Claude Desktop";
       console.log(`  Removed from ${sourceLabel}: ${removeFromSource.join(", ")}`);
     }
 

@@ -8,7 +8,9 @@ import { buildDockerRunArgs, buildUpstreamTransportConfig } from "./runtime/upst
 import {
   getClaudeCodeSettingsPath,
   getClaudeDesktopConfigPath,
+  getClaudeJsonPath,
   readMcpServersFromFile,
+  readMcpServersFromClaudeJson,
   discoverMcpServers
 } from "./cli/mcp-discovery.js";
 
@@ -183,8 +185,118 @@ async function run(): Promise<void> {
 
   test("discoverMcpServers returns a valid DiscoveryResult without throwing", () => {
     const result = discoverMcpServers();
-    assert.ok(["claude-code", "claude-desktop", "none"].includes(result.source));
+    assert.ok(["claude-code-project", "claude-code", "claude-desktop", "none"].includes(result.source));
     assert.ok(Array.isArray(result.servers));
+  });
+
+  // -----------------------------------------------------------------------
+  // ~/.claude.json project-level discovery tests
+  // -----------------------------------------------------------------------
+
+  test("getClaudeJsonPath resolves to ~/.claude.json", () => {
+    const p = getClaudeJsonPath();
+    assert.ok(p.startsWith(os.homedir()), `expected path under homedir, got: ${p}`);
+    assert.ok(p.endsWith(".claude.json"), `expected .claude.json suffix, got: ${p}`);
+  });
+
+  test("readMcpServersFromClaudeJson returns [] for missing file", () => {
+    const result = readMcpServersFromClaudeJson(
+      path.join(os.tmpdir(), "__nonexistent__", ".claude.json"),
+      "/some/project"
+    );
+    assert.deepEqual(result, []);
+  });
+
+  test("readMcpServersFromClaudeJson returns [] for invalid JSON", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "latchkey-cj-"));
+    const filePath = path.join(tmp, ".claude.json");
+    fs.writeFileSync(filePath, "{ not valid }");
+    assert.deepEqual(readMcpServersFromClaudeJson(filePath, "/some/project"), []);
+    fs.rmSync(tmp, { recursive: true });
+  });
+
+  test("readMcpServersFromClaudeJson returns [] when project key is missing", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "latchkey-cj-"));
+    const filePath = path.join(tmp, ".claude.json");
+    fs.writeFileSync(filePath, JSON.stringify({ projects: { "/other/project": { mcpServers: {} } } }));
+    assert.deepEqual(readMcpServersFromClaudeJson(filePath, "/my/project"), []);
+    fs.rmSync(tmp, { recursive: true });
+  });
+
+  test("readMcpServersFromClaudeJson matches project key with forward-slash normalization", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "latchkey-cj-"));
+    const filePath = path.join(tmp, ".claude.json");
+    // Key stored with backslashes, lookup uses forward slashes (or vice-versa)
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        projects: {
+          "C:\\Users\\anshu\\project": {
+            mcpServers: {
+              myserver: { command: "npx", args: ["-y", "my-mcp"] }
+            }
+          }
+        }
+      })
+    );
+    const result = readMcpServersFromClaudeJson(filePath, "C:/Users/anshu/project");
+    assert.equal(result.length, 1);
+    assert.equal(result[0]?.name, "myserver");
+    fs.rmSync(tmp, { recursive: true });
+  });
+
+  test("readMcpServersFromClaudeJson filters latchkey and latchkey-proxy", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "latchkey-cj-"));
+    const filePath = path.join(tmp, ".claude.json");
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        projects: {
+          "/my/project": {
+            mcpServers: {
+              latchkey: { command: "latchkey-proxy", args: ["start"] },
+              "latchkey-proxy": { command: "latchkey-proxy", args: ["start"] },
+              drawio: { command: "npx", args: ["-y", "@drawio/mcp"] }
+            }
+          }
+        }
+      })
+    );
+    const result = readMcpServersFromClaudeJson(filePath, "/my/project");
+    assert.equal(result.length, 1);
+    assert.equal(result[0]?.name, "drawio");
+    fs.rmSync(tmp, { recursive: true });
+  });
+
+  test("readMcpServersFromClaudeJson skips entries without a command field", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "latchkey-cj-"));
+    const filePath = path.join(tmp, ".claude.json");
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        projects: {
+          "/my/project": {
+            mcpServers: {
+              valid: { command: "npx", args: [] },
+              nocommand: { args: ["foo"] },
+              nullentry: null
+            }
+          }
+        }
+      })
+    );
+    const result = readMcpServersFromClaudeJson(filePath, "/my/project");
+    assert.equal(result.length, 1);
+    assert.equal(result[0]?.name, "valid");
+    fs.rmSync(tmp, { recursive: true });
+  });
+
+  test("readMcpServersFromClaudeJson returns [] when mcpServers is missing from project", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "latchkey-cj-"));
+    const filePath = path.join(tmp, ".claude.json");
+    fs.writeFileSync(filePath, JSON.stringify({ projects: { "/my/project": { someOtherKey: true } } }));
+    assert.deepEqual(readMcpServersFromClaudeJson(filePath, "/my/project"), []);
+    fs.rmSync(tmp, { recursive: true });
   });
 
   console.log(`\n${passed} MCP runtime tests passed.`);
