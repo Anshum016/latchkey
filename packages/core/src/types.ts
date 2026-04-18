@@ -57,6 +57,7 @@ export interface PolicyRule {
 export interface LatchkeyConfig {
   channel: NotificationChannelKind;
   slackWebhookUrl?: string | undefined;
+  slackSigningSecret?: string | undefined;
   resendApiKey?: string | undefined;
   userEmail?: string | undefined;
   emailFrom?: string | undefined;
@@ -66,6 +67,7 @@ export interface LatchkeyConfig {
   upstreamServers: UpstreamServerConfig[];
   rules: PolicyRule[];
   toolNameMode: ToolNameMode;
+  ai: AIConfig;
 }
 
 export interface SecurityRule {
@@ -93,12 +95,58 @@ export interface DimensionScore {
 export type RiskLevel = "low" | "high" | "critical";
 export type RiskAction = "approve" | "notify" | "block";
 
+export interface HeuristicScoringResult {
+  score: number;
+  tier: RiskLevel;
+  dimensions: DimensionScore[];
+}
+
+export type AIAgreement = "confirm" | "raise" | "lower";
+export type AIPrimaryConcern =
+  | "reversibility"
+  | "blast_radius"
+  | "data_sensitivity"
+  | "intent_mismatch"
+  | "injection_suspected"
+  | "none";
+
+export interface AIClassifierResult {
+  score: number;
+  agreement: AIAgreement;
+  primary_concern: AIPrimaryConcern;
+  reasoning: string;
+  latency_ms: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface AIClassifierConfig {
+  apiKey: string;
+  model?: string | undefined;
+  timeoutMs?: number | undefined;
+}
+
+export interface AIClassifierLike {
+  classify(ctx: RiskContext, heuristic: HeuristicScoringResult): Promise<AIClassifierResult>;
+}
+
+export type FusionStrategy = "max_with_agreement";
+
 export interface RiskResult {
   score: number;
   level: RiskLevel;
   action: RiskAction;
   breakdown: DimensionScore[];
   explanation: string;
+  heuristic?: HeuristicScoringResult;
+  ai?: AIClassifierResult;
+  fusionStrategy?: FusionStrategy;
+}
+
+export interface AIConfig {
+  apiKey?: string | undefined;
+  model: string;
+  timeoutMs: number;
 }
 
 export type ApprovalDecision = "allow" | "deny";

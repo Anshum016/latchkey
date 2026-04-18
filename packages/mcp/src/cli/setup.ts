@@ -18,6 +18,10 @@ interface ClaudeDesktopConfig {
   preferences?: Record<string, unknown>;
 }
 
+interface ClaudeCodeSettings {
+  mcpServers?: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
+}
+
 async function ask(rl: readline.Interface, label: string, defaultValue?: string): Promise<string> {
   const suffix = defaultValue ? ` [${defaultValue}]` : "";
   const answer = (await rl.question(`${label}${suffix}: `)).trim();
@@ -74,6 +78,139 @@ function normalizeChannelAnswer(answer: string, fallback: NotificationChannelKin
   return fallback;
 }
 
+interface DiscoveredMcpServer {
+  name: string;
+  command: string;
+  args: string[];
+  env?: Record<string, string> | undefined;
+}
+
+function readClaudeDesktopMcpServers(): DiscoveredMcpServer[] {
+  const configPath = getClaudeDesktopConfigPath();
+  if (!fs.existsSync(configPath)) {
+    return [];
+  }
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as ClaudeDesktopConfig;
+    return Object.entries(raw.mcpServers ?? {})
+      .filter(([name]) => name !== "latchkey")
+      .map(([name, cfg]) => ({
+        name,
+        command: cfg.command,
+        args: cfg.args ?? [],
+        ...(cfg.env ? { env: cfg.env } : {})
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function discoveredToUpstream(server: DiscoveredMcpServer): UpstreamServerConfig {
+  return {
+    name: server.name,
+    transport: "stdio",
+    command: server.command,
+    args: server.args,
+    ...(server.env ? { env: server.env } : {})
+  };
+}
+
+function formatCommandPreview(command: string, args: string[]): string {
+  const full = [command, ...args].join(" ");
+  return full.length > 64 ? `${full.slice(0, 61)}…` : full;
+}
+
+function removeServersFromClaudeDesktopConfig(names: string[]): void {
+  const configPath = getClaudeDesktopConfigPath();
+  if (!fs.existsSync(configPath) || names.length === 0) {
+    return;
+  }
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as ClaudeDesktopConfig;
+    const mcpServers = { ...(raw.mcpServers ?? {}) };
+    for (const name of names) {
+      delete mcpServers[name];
+    }
+    fs.writeFileSync(configPath, `${JSON.stringify({ ...raw, mcpServers }, null, 2)}\n`, "utf-8");
+  } catch (error) {
+    console.warn(
+      `  Warning: could not remove servers from Claude Desktop config: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+}
+
+async function configureUpstreams(
+  rl: readline.Interface,
+  existing: UpstreamServerConfig[],
+  discovered: DiscoveredMcpServer[]
+): Promise<{ upstreams: UpstreamServerConfig[]; removeFromDesktop: string[] }> {
+  if (discovered.length === 0) {
+    if (existing.length === 0) {
+      console.log("\nNo MCP servers found in Claude Desktop. Configuring manually.");
+    }
+    return { upstreams: await configurePrimaryUpstream(rl, existing), removeFromDesktop: [] };
+  }
+
+  const existingNames = new Set(existing.map((u) => u.name));
+  console.log(`\nDiscovered ${discovered.length} MCP server(s) in Claude Desktop:`);
+  discovered.forEach((server, i) => {
+    const tag = existingNames.has(server.name) ? " (already wrapped)" : "";
+    console.log(
+      `  [${i + 1}] ${server.name.padEnd(18)} ${formatCommandPreview(server.command, server.args)}${tag}`
+    );
+  });
+  console.log(`  [m] Configure manually instead`);
+
+  const defaultAnswer = existing.length > 0 ? "skip" : "all";
+  const answer = (
+    await ask(rl, `Wrap which servers? (e.g. 1,2 or "all" or "skip" or "m")`, defaultAnswer)
+  ).trim().toLowerCase();
+
+  if (answer === "m" || answer === "manual") {
+    return { upstreams: await configurePrimaryUpstream(rl, existing), removeFromDesktop: [] };
+  }
+
+  if (answer === "skip") {
+    return { upstreams: existing, removeFromDesktop: [] };
+  }
+
+  let selected: DiscoveredMcpServer[];
+  if (answer === "all") {
+    selected = discovered;
+  } else {
+    const indices = answer
+      .split(",")
+      .map((s) => parseInt(s.trim(), 10) - 1)
+      .filter((i) => i >= 0 && i < discovered.length);
+    selected = indices.flatMap((i) => (discovered[i] ? [discovered[i] as DiscoveredMcpServer] : []));
+  }
+
+  if (selected.length === 0) {
+    console.log("No valid selection — configuring manually.");
+    return { upstreams: await configurePrimaryUpstream(rl, existing), removeFromDesktop: [] };
+  }
+
+  const upstreams = selected.map(discoveredToUpstream);
+
+  const shouldRemove = parseBooleanAnswer(
+    await ask(
+      rl,
+      "Remove selected servers from Claude Desktop to prevent direct bypasses? (yes/no)",
+      "yes"
+    ),
+    true
+  );
+
+  return {
+    upstreams,
+    removeFromDesktop: shouldRemove ? selected.map((s) => s.name) : []
+  };
+}
+
 function getDefaultProtectedUpstream(existingUpstreams: UpstreamServerConfig[], existingRules: PolicyRule[]): string {
   const fromRule = existingRules.find((rule) => rule.upstream)?.upstream;
   if (fromRule) {
@@ -115,6 +252,38 @@ function getClaudeDesktopConfigPath(): string {
     default:
       return path.join(os.homedir(), ".config", "Claude", "claude_desktop_config.json");
   }
+}
+
+function getClaudeCodeUserConfigPath(): string {
+  return path.join(os.homedir(), ".claude", "settings.json");
+}
+
+function installClaudeCodeConfig(configPath: string): string {
+  const settingsPath = getClaudeCodeUserConfigPath();
+  const directory = path.dirname(settingsPath);
+  if (!fs.existsSync(directory)) {
+    fs.mkdirSync(directory, { recursive: true });
+  }
+
+  const existing: ClaudeCodeSettings = fs.existsSync(settingsPath)
+    ? (JSON.parse(fs.readFileSync(settingsPath, "utf-8")) as ClaudeCodeSettings)
+    : {};
+
+  const cliEntryPath = getCliEntryPath();
+  if (!fs.existsSync(cliEntryPath)) {
+    throw new Error(`Latchkey CLI was not found at ${cliEntryPath}. Run npm run build before installing Claude Code config.`);
+  }
+
+  const absoluteConfigPath = path.resolve(configPath);
+  const mcpServers = existing.mcpServers ?? {};
+  mcpServers.latchkey = {
+    command: process.execPath,
+    args: [cliEntryPath, "--config", absoluteConfigPath, "start"]
+  };
+
+  const nextConfig: ClaudeCodeSettings = { ...existing, mcpServers };
+  fs.writeFileSync(settingsPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf-8");
+  return settingsPath;
 }
 
 function getCliEntryPath(): string {
@@ -252,7 +421,14 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
       await ask(rl, "Notification channel (slack/gmail)", getChannelPromptValue(existing.channel)),
       existing.channel
     );
-    const upstreamServers = await configurePrimaryUpstream(rl, existing.upstreamServers);
+
+    const discovered = readClaudeDesktopMcpServers();
+    const { upstreams: upstreamServers, removeFromDesktop } = await configureUpstreams(
+      rl,
+      existing.upstreamServers,
+      discovered
+    );
+
     const defaultProtectedUpstream = getDefaultProtectedUpstream(upstreamServers, existing.rules);
     const protectedUpstream = await ask(
       rl,
@@ -263,6 +439,11 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
       Number(await ask(rl, "Approval timeout in milliseconds", String(existing.timeoutMs))) || existing.timeoutMs;
     const installClaude = parseBooleanAnswer(
       await ask(rl, "Auto-install Claude Desktop MCP config? (yes/no)", "yes"),
+      true
+    );
+
+    const installClaudeCode = parseBooleanAnswer(
+      await ask(rl, "Auto-install Claude Code MCP config? (yes/no)", "yes"),
       true
     );
 
@@ -278,6 +459,12 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
 
     if (channel === "slack") {
       updates.slackWebhookUrl = await ask(rl, "Slack Incoming Webhook URL", existing.slackWebhookUrl);
+      const signingSecret = await ask(
+        rl,
+        "Slack Signing Secret (optional, press Enter to skip)",
+        existing.slackSigningSecret
+      );
+      updates.slackSigningSecret = signingSecret.trim() || undefined;
       updates.resendApiKey = undefined;
       updates.userEmail = undefined;
       updates.emailFrom = undefined;
@@ -290,20 +477,34 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
         existing.emailFrom ?? "Latchkey <onboarding@resend.dev>"
       );
       updates.slackWebhookUrl = undefined;
+      updates.slackSigningSecret = undefined;
     }
 
     const saved = saveConfig(updates, configPath);
     const claudeConfigPath = installClaude ? installClaudeDesktopConfig(configPath) : null;
+    const claudeCodeConfigPath = installClaudeCode ? installClaudeCodeConfig(configPath) : null;
+
+    if (removeFromDesktop.length > 0) {
+      removeServersFromClaudeDesktopConfig(removeFromDesktop);
+    }
 
     console.log("\nSaved configuration:");
     console.log(`  channel: ${saved.channel === "email" ? "gmail" : saved.channel}`);
     console.log(`  webhookBaseUrl: ${saved.webhookBaseUrl}`);
     console.log(`  databasePath: ${saved.databasePath}`);
-    console.log(`  upstreams: ${saved.upstreamServers.length}`);
+    console.log(`  upstreams: ${saved.upstreamServers.length} (${saved.upstreamServers.map((u) => u.name).join(", ") || "none"})`);
     console.log(`  starter rules: ${saved.rules.length}`);
 
     if (claudeConfigPath) {
       console.log(`  Claude Desktop config: ${claudeConfigPath}`);
+    }
+
+    if (claudeCodeConfigPath) {
+      console.log(`  Claude Code config:    ${claudeCodeConfigPath}`);
+    }
+
+    if (removeFromDesktop.length > 0) {
+      console.log(`  Removed from Claude Desktop: ${removeFromDesktop.join(", ")}`);
     }
 
     console.log("\nNext steps:");
@@ -312,9 +513,13 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
     } else {
       console.log('  1. Register Latchkey in Claude Desktop using the "start" command.');
     }
+    if (claudeCodeConfigPath) {
+      console.log("     Claude Code picks up the MCP config automatically — no restart needed.");
+    }
     console.log("  2. Use `latchkey start` if you want to run the proxy and webhook together yourself.");
     console.log('  3. Optionally tell the agent to call "latchkey_set_task" at the start of each session.');
     console.log("  4. Use `latchkey approve <code> <allow|deny>` any time you need a CLI fallback.");
+    console.log("  5. Use `latchkey score <tool-name>` to preview risk scores before going live.");
   } finally {
     rl.close();
   }

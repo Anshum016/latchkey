@@ -30,6 +30,44 @@ function topReasons(risk: RiskResult): string[] {
   return risk.explanation === "Safe action" ? [] : [risk.explanation];
 }
 
+function truncateParamValue(value: unknown, depth: number): unknown {
+  if (depth >= 2) {
+    return typeof value === "object" && value !== null ? (Array.isArray(value) ? "[…]" : "{…}") : value;
+  }
+
+  if (typeof value === "string") {
+    return value.length > 120 ? `${value.slice(0, 120)}…` : value;
+  }
+
+  if (Array.isArray(value)) {
+    const items: unknown[] = value.slice(0, 5).map((item) => truncateParamValue(item, depth + 1));
+    if (value.length > 5) {
+      items.push(`+${value.length - 5} more`);
+    }
+    return items;
+  }
+
+  if (value !== null && typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      result[k] = truncateParamValue(v, depth + 1);
+    }
+    return result;
+  }
+
+  return value;
+}
+
+function formatParamsForDisplay(params: Record<string, unknown>): string {
+  if (Object.keys(params).length === 0) {
+    return "(none)";
+  }
+
+  const truncated = truncateParamValue(params, 0);
+  const json = JSON.stringify(truncated, null, 2);
+  return json.length > 480 ? `${json.slice(0, 480)}\n… (truncated)` : json;
+}
+
 function buildApproveUrl(baseUrl: string, token: string, decision: "allow" | "deny"): string {
   const url = new URL("/approve", baseUrl);
   url.searchParams.set("token", token);
@@ -51,14 +89,26 @@ function buildApprovalText(payload: NotificationDispatchPayload): string {
   const allowUrl = buildApproveUrl(payload.webhookBaseUrl, payload.request.token, "allow");
   const denyUrl = buildApproveUrl(payload.webhookBaseUrl, payload.request.token, "deny");
   const cliFallback = buildCliFallback(payload.request.code).map((line) => `- ${line}`).join("\n");
+  const formattedParams = formatParamsForDisplay(payload.request.params);
+  const aiReasoning = payload.risk.ai?.reasoning.trim();
 
-  return [
+  const parts: string[] = [
     "Latchkey approval needed",
     "",
     `Tool: ${payload.request.toolName}`,
     `Risk: ${payload.risk.score}/100 (${payload.risk.level.toUpperCase()})`,
     `Code: ${payload.request.code}`,
-    `Expires in: ${timeoutSeconds}s`,
+    `Expires in: ${timeoutSeconds}s`
+  ];
+
+  if (aiReasoning) {
+    parts.push("", "AI Assessment:", aiReasoning);
+  }
+
+  parts.push(
+    "",
+    "Parameters:",
+    formattedParams,
     "",
     "Why it was flagged:",
     reasons || "- No additional detail",
@@ -69,7 +119,9 @@ function buildApprovalText(payload: NotificationDispatchPayload): string {
     "",
     "CLI fallback:",
     cliFallback
-  ].join("\n");
+  );
+
+  return parts.join("\n");
 }
 
 function buildAutoBlockedText(payload: NotificationDispatchPayload): string {
@@ -117,6 +169,12 @@ function buildEmailHtml(payload: NotificationDispatchPayload): string {
   const cliFallback = buildCliFallback(payload.request.code)
     .map((command) => `<div><code>${escapeHtml(command)}</code></div>`)
     .join("");
+  const formattedParams = escapeHtml(formatParamsForDisplay(payload.request.params));
+  const aiReasoning = payload.risk.ai?.reasoning.trim();
+  const aiSection = aiReasoning
+    ? `<h2 style="font-size:16px;margin:0 0 10px;">AI Assessment</h2>
+      <p style="margin:0 0 24px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:12px 16px;font-style:italic;">${escapeHtml(aiReasoning)}</p>`
+    : "";
 
   return `<!doctype html>
 <html>
@@ -127,6 +185,11 @@ function buildEmailHtml(payload: NotificationDispatchPayload): string {
       <p style="margin:0 0 6px;"><strong>Risk:</strong> ${payload.risk.score}/100 (${escapeHtml(payload.risk.level.toUpperCase())})</p>
       <p style="margin:0 0 6px;"><strong>Code:</strong> ${escapeHtml(payload.request.code)}</p>
       <p style="margin:0 0 18px;"><strong>Expires in:</strong> ${timeoutSeconds}s</p>
+      ${aiSection}
+      <h2 style="font-size:16px;margin:0 0 10px;">Parameters</h2>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:24px;">
+        <pre style="margin:0;font-size:13px;white-space:pre-wrap;word-break:break-all;font-family:monospace;">${formattedParams}</pre>
+      </div>
       <h2 style="font-size:16px;margin:0 0 10px;">Why it was flagged</h2>
       <ul style="margin:0 0 24px 20px;padding:0;">
         ${reasons || "<li>No additional detail</li>"}
@@ -170,6 +233,20 @@ class SlackWebhookChannel implements NotificationChannel {
     const denyUrl = buildApproveUrl(payload.webhookBaseUrl, payload.request.token, "deny");
     const timeoutSeconds = Math.round(payload.timeoutMs / 1000);
     const cliFallback = buildCliFallback(payload.request.code);
+    const formattedParams = formatParamsForDisplay(payload.request.params);
+
+    const aiReasoning = payload.risk.ai?.reasoning.trim();
+    const aiBlock = aiReasoning
+      ? [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*AI Assessment:* ${aiReasoning}`
+            }
+          }
+        ]
+      : [];
 
     await this.webhook.send({
       text: `Latchkey approval needed for ${payload.request.toolName} (${payload.risk.score}/100, code ${payload.request.code})`,
@@ -184,6 +261,14 @@ class SlackWebhookChannel implements NotificationChannel {
               `*Risk:* ${payload.risk.score}/100 (${payload.risk.level.toUpperCase()})\n` +
               `*Code:* \`${payload.request.code}\`\n` +
               `*Expires in:* ${timeoutSeconds}s`
+          }
+        },
+        ...aiBlock,
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `*Parameters*\n\`\`\`\n${formattedParams}\n\`\`\``
           }
         },
         {

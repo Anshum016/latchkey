@@ -1,19 +1,48 @@
 {
   "name": "@latchkey/webhook",
   "version": "0.1.0",
+  "description": "Webhook receiver for Latchkey MCP proxy — handles Slack interactive callbacks and email approval links",
+  "license": "MIT",
   "type": "module",
   "main": "build/index.js",
   "types": "build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "default": "./build/index.js"
+    }
+  },
+  "files": [
+    "build/index.js",
+    "build/index.d.ts",
+    "build/index.d.ts.map",
+    "build/server.js",
+    "build/server.d.ts",
+    "build/server.d.ts.map"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "ai",
+    "agent",
+    "webhook",
+    "slack",
+    "approval",
+    "latchkey"
+  ],
   "bin": {
     "latchkey-webhook": "build/server.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && node build/test.js"
+    "test": "tsc -p tsconfig.json && node build/test.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@latchkey/core": "file:../core",
+    "@latchkey/core": "^0.1.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.1",
     "express": "^5.2.1"

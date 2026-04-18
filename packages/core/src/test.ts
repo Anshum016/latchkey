@@ -2,14 +2,49 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { AIClassifier, AIClassifierNotConfiguredError } from "./ai-classifier.js";
 import { ApprovalService } from "./approval-service.js";
-import { getDefaultDatabasePath, loadConfig, saveConfig } from "./config.js";
+import { assertAIConfigured, getDefaultDatabasePath, loadConfig, saveConfig } from "./config.js";
 import { NotificationError, NotificationService, buildNotificationPreview } from "./notification.js";
 import { PolicyEngine } from "./policy-engine.js";
 import { parseSecurityRules } from "./policy.js";
-import { RiskEngine } from "./risk.js";
+import { RiskEngine, fuseScores } from "./risk.js";
 import { SQLiteApprovalStore } from "./storage.js";
-import type { LatchkeyConfig, NotificationChannel, NotificationDispatchPayload } from "./types.js";
+import type {
+  AIClassifierResult,
+  HeuristicScoringResult,
+  LatchkeyConfig,
+  NotificationChannel,
+  NotificationDispatchPayload,
+  RiskContext
+} from "./types.js";
+
+class StubAIClassifier {
+  public result: AIClassifierResult;
+  public shouldThrow: boolean;
+  public thrownError: Error;
+
+  public constructor(scoreOverride = 0) {
+    this.result = {
+      score: scoreOverride,
+      agreement: "confirm",
+      primary_concern: "none",
+      reasoning: "",
+      latency_ms: 1,
+      input_tokens: 10,
+      output_tokens: 5
+    };
+    this.shouldThrow = false;
+    this.thrownError = new Error("stub classifier failure");
+  }
+
+  public async classify(_ctx: RiskContext, _heuristic: HeuristicScoringResult): Promise<AIClassifierResult> {
+    if (this.shouldThrow) {
+      throw this.thrownError;
+    }
+    return this.result;
+  }
+}
 
 class StubNotificationChannel implements NotificationChannel {
   public readonly kind = "email" as const;
@@ -44,7 +79,8 @@ function createConfig(databasePath: string): LatchkeyConfig {
     databasePath,
     upstreamServers: [],
     rules: [],
-    toolNameMode: "transparent"
+    toolNameMode: "transparent",
+    ai: { model: "claude-haiku-4-5-20251001", timeoutMs: 5000 }
   };
 }
 
@@ -57,9 +93,10 @@ async function run(): Promise<void> {
     console.log(`✓ ${name}`);
   }
 
-  await test("RiskEngine scores permanent delete as critical and approval-required", () => {
-    const engine = new RiskEngine();
-    const result = engine.score({
+  await test("RiskEngine scores permanent delete as critical and approval-required", async () => {
+    const stub = new StubAIClassifier(0);
+    const engine = new RiskEngine([], stub);
+    const result = await engine.score({
       toolName: "delete_email",
       payload: { id: "msg_1", permanent: true },
       sessionTask: "summarize my inbox",
@@ -71,9 +108,10 @@ async function run(): Promise<void> {
     assert.ok(result.score >= 65);
   });
 
-  await test("RiskEngine allows low-risk aligned task", () => {
-    const engine = new RiskEngine();
-    const result = engine.score({
+  await test("RiskEngine allows low-risk aligned task", async () => {
+    const stub = new StubAIClassifier(0);
+    const engine = new RiskEngine([], stub);
+    const result = await engine.score({
       toolName: "delete_email",
       payload: { id: "msg_1" },
       sessionTask: "clean inbox",
@@ -171,16 +209,17 @@ async function run(): Promise<void> {
     assert.equal(rules[0]?.reason, "Never delete data");
   });
 
-  await test("PolicyEngine overrides heuristic approvals", () => {
+  await test("PolicyEngine overrides heuristic approvals", async () => {
     const policyEngine = new PolicyEngine([
       { action: "delete_*", approval: "required", reason: "Delete actions need approval" },
       { action: "read_email", approval: "none", reason: "Read actions should stay seamless" }
     ]);
-    const riskEngine = new RiskEngine();
+    const stub = new StubAIClassifier(0);
+    const riskEngine = new RiskEngine([], stub);
 
     const notifyRisk = policyEngine.applyToRisk(
       "delete_email",
-      riskEngine.score({
+      await riskEngine.score({
         toolName: "delete_email",
         payload: { id: "msg_1" },
         sessionTask: "clean inbox",
@@ -191,7 +230,7 @@ async function run(): Promise<void> {
 
     const approvedRisk = policyEngine.applyToRisk(
       "read_email",
-      riskEngine.score({
+      await riskEngine.score({
         toolName: "read_email",
         payload: { id: "msg_1" },
         sessionTask: "summarize inbox",
@@ -278,7 +317,7 @@ async function run(): Promise<void> {
     const channel = new StubNotificationChannel();
     const service = new ApprovalService(store, new NotificationService(channel), config);
 
-    const approveRisk = new RiskEngine().score({
+    const approveRisk = await new RiskEngine([], new StubAIClassifier(0)).score({
       toolName: "delete_email",
       payload: { id: "msg_1" },
       sessionTask: "clean inbox",
@@ -295,7 +334,7 @@ async function run(): Promise<void> {
     assert.equal(approved.status, "executed");
     assert.equal(approved.result, "ok");
 
-    const notifyRisk = new RiskEngine().score({
+    const notifyRisk = await new RiskEngine([], new StubAIClassifier(0)).score({
       toolName: "delete_email",
       payload: { id: "msg_2" },
       sessionTask: "summarize my inbox",
@@ -342,7 +381,7 @@ async function run(): Promise<void> {
     });
     assert.equal(timedOut.status, "timed_out");
 
-    const blockRisk = new RiskEngine().score({
+    const blockRisk = await new RiskEngine([], new StubAIClassifier(0)).score({
       toolName: "delete_email",
       payload: { id: "msg_1", permanent: true },
       sessionTask: "summarize my inbox",
@@ -391,7 +430,7 @@ async function run(): Promise<void> {
     const channel = new StubNotificationChannel();
     channel.failApproval = true;
     const service = new ApprovalService(store, new NotificationService(channel), config);
-    const risk = new RiskEngine().score({
+    const risk = await new RiskEngine([], new StubAIClassifier(0)).score({
       toolName: "delete_email",
       payload: { id: "msg_2" },
       sessionTask: "summarize my inbox",
@@ -410,9 +449,9 @@ async function run(): Promise<void> {
     store.close();
   });
 
-  await test("Notification helpers include approval codes, links, and CLI fallback", () => {
-    const engine = new RiskEngine();
-    const risk = engine.score({
+  await test("Notification helpers include approval codes, links, and CLI fallback", async () => {
+    const engine = new RiskEngine([], new StubAIClassifier(0));
+    const risk = await engine.score({
       toolName: "send_email",
       payload: { to: "dev@example.com" },
       sessionTask: "summarize my inbox",
@@ -440,10 +479,160 @@ async function run(): Promise<void> {
     assert.match(preview, /Allow:/);
     assert.match(preview, /Deny:/);
     assert.match(preview, /latchkey approve ABC12345 allow/);
+    assert.match(preview, /Parameters:/);
+    assert.match(preview, /dev@example\.com/);
   });
 
   await test("Default database path remains under ~/.latchkey", () => {
     assert.match(getDefaultDatabasePath(), /[\\/]\.latchkey[\\/]latchkey\.db$/);
+  });
+
+  // --- AI Classifier and fusion tests ---
+
+  await test("fuseScores returns max of heuristic and ai when both below 50", () => {
+    const h: HeuristicScoringResult = { score: 40, tier: "high", dimensions: [] };
+    const ai: AIClassifierResult = { score: 20, agreement: "lower", primary_concern: "none", reasoning: "", latency_ms: 1, input_tokens: 1, output_tokens: 1 };
+    const { score } = fuseScores(h, ai);
+    assert.equal(score, 40);
+  });
+
+  await test("fuseScores applies +10 bonus when both scores >= 50", () => {
+    const h: HeuristicScoringResult = { score: 55, tier: "high", dimensions: [] };
+    const ai: AIClassifierResult = { score: 60, agreement: "confirm", primary_concern: "reversibility", reasoning: "", latency_ms: 1, input_tokens: 1, output_tokens: 1 };
+    const { score } = fuseScores(h, ai);
+    assert.equal(score, Math.min(100, Math.max(55, 60) + 10));
+  });
+
+  await test("fuseScores uses ai.score when heuristic < 30 and ai > 60", () => {
+    const h: HeuristicScoringResult = { score: 15, tier: "low", dimensions: [] };
+    const ai: AIClassifierResult = { score: 80, agreement: "raise", primary_concern: "injection_suspected", reasoning: "Injection detected", latency_ms: 1, input_tokens: 1, output_tokens: 1 };
+    const { score } = fuseScores(h, ai);
+    assert.equal(score, 80);
+  });
+
+  await test("RiskEngine.score fuses heuristic and ai — max fusion", async () => {
+    const stub = new StubAIClassifier(20);
+    const engine = new RiskEngine([], stub);
+    const result = await engine.score({
+      toolName: "delete_email",
+      payload: { id: "msg_1", permanent: true },
+      sessionTask: "summarize my inbox",
+      now: new Date("2026-04-12T12:00:00Z")
+    });
+    assert.ok(result.heuristic !== undefined);
+    assert.ok(result.ai !== undefined);
+    assert.equal(result.fusionStrategy, "max_with_agreement");
+    assert.equal(result.score, Math.max(result.heuristic!.score, result.ai!.score));
+  });
+
+  await test("RiskEngine.score appends AI reasoning to explanation", async () => {
+    const stub = new StubAIClassifier(0);
+    stub.result.reasoning = "Potential injection in payload";
+    const engine = new RiskEngine([], stub);
+    const result = await engine.score({
+      toolName: "delete_email",
+      payload: { id: "msg_1" },
+      sessionTask: "summarize my inbox",
+      now: new Date("2026-04-12T12:00:00Z")
+    });
+    assert.match(result.explanation, /AI: Potential injection in payload/);
+  });
+
+  await test("RiskEngine.score propagates AIClassifier errors", async () => {
+    const stub = new StubAIClassifier(0);
+    stub.shouldThrow = true;
+    const engine = new RiskEngine([], stub);
+    await assert.rejects(
+      () => engine.score({ toolName: "delete_email", payload: { id: "1" } }),
+      (err: Error) => {
+        assert.equal(err.message, "stub classifier failure");
+        return true;
+      }
+    );
+  });
+
+  await test("RiskEngine.score throws when no classifier configured", async () => {
+    const engine = new RiskEngine([]);
+    await assert.rejects(
+      () => engine.score({ toolName: "delete_email", payload: { id: "1" } }),
+      (err: Error) => {
+        assert.equal(err.name, "AIClassifierNotConfiguredError");
+        return true;
+      }
+    );
+  });
+
+  await test("AIClassifier constructor throws on empty API key", () => {
+    assert.throws(
+      () => new AIClassifier({ apiKey: "" }),
+      (err: Error) => {
+        assert.equal(err.name, "AIClassifierNotConfiguredError");
+        return true;
+      }
+    );
+  });
+
+  await test("assertAIConfigured throws when api key missing, passes when present", () => {
+    const tempDir = createTempDirectory();
+    const baseConfig = createConfig(path.join(tempDir, "assert-ai.db"));
+
+    const missingKeyConfig = { ...baseConfig, ai: { model: "claude-haiku-4-5-20251001", timeoutMs: 5000 } };
+    assert.throws(
+      () => assertAIConfigured(missingKeyConfig),
+      (err: Error) => {
+        assert.equal(err.name, "AIClassifierNotConfiguredError");
+        return true;
+      }
+    );
+
+    const withKeyConfig = { ...baseConfig, ai: { apiKey: "sk-ant-test-key", model: "claude-haiku-4-5-20251001", timeoutMs: 5000 } };
+    assert.doesNotThrow(() => assertAIConfigured(withKeyConfig));
+  });
+
+  await test("loadConfig succeeds without ai.apiKey; assertAIConfigured rejects it", () => {
+    const tempDir = createTempDirectory();
+    const configPath = path.join(tempDir, "no-ai-key.yaml");
+    saveConfig(
+      {
+        channel: "email",
+        webhookBaseUrl: "http://localhost:3001",
+        timeoutMs: 1000,
+        upstreamServers: [],
+        rules: [],
+        toolNameMode: "transparent"
+      },
+      configPath
+    );
+
+    const loaded = loadConfig(configPath);
+    assert.equal(loaded.ai.apiKey, undefined);
+    assert.equal(loaded.ai.model, "claude-haiku-4-5-20251001");
+    assert.throws(() => assertAIConfigured(loaded), (err: Error) => {
+      assert.equal(err.name, "AIClassifierNotConfiguredError");
+      return true;
+    });
+  });
+
+  await test("Config round-trip preserves ai block", () => {
+    const tempDir = createTempDirectory();
+    const configPath = path.join(tempDir, "ai-roundtrip.yaml");
+    saveConfig(
+      {
+        channel: "email",
+        webhookBaseUrl: "http://localhost:3001",
+        timeoutMs: 1000,
+        upstreamServers: [],
+        rules: [],
+        toolNameMode: "transparent",
+        ai: { apiKey: "sk-ant-round-trip", model: "claude-haiku-4-5-20251001", timeoutMs: 8000 }
+      },
+      configPath
+    );
+
+    const loaded = loadConfig(configPath);
+    assert.equal(loaded.ai.apiKey, "sk-ant-round-trip");
+    assert.equal(loaded.ai.model, "claude-haiku-4-5-20251001");
+    assert.equal(loaded.ai.timeoutMs, 8000);
   });
 
   console.log(`\n${passed} core tests passed.`);

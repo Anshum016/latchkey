@@ -1,3 +1,4 @@
+export * from "./ai-classifier.js";
 export * from "./approval-service.js";
 export * from "./config.js";
 export * from "./notification.js";

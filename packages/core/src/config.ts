@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
+import { AIClassifierNotConfiguredError } from "./ai-classifier.js";
 import type {
+  AIConfig,
   DockerUpstreamServerConfig,
   LatchkeyConfig,
   NotificationChannelKind,
@@ -100,6 +102,7 @@ const policyRuleSchema = z.object({
 const notificationConfigSchema = z.object({
   channel: z.enum(["slack", "email"]).default("slack"),
   slackWebhookUrl: z.string().min(1).optional(),
+  slackSigningSecret: z.string().min(1).optional(),
   resendApiKey: z.string().min(1).optional(),
   userEmail: z.string().email().optional(),
   emailFrom: z.string().min(1).optional(),
@@ -112,17 +115,25 @@ const proxyConfigSchema = z.object({
   toolNameMode: z.enum(["transparent", "prefixed"]).default("transparent")
 });
 
+const aiConfigSchema = z.object({
+  apiKey: z.string().min(1).optional(),
+  model: z.string().min(1).default("claude-haiku-4-5-20251001"),
+  timeoutMs: z.number().int().positive().default(5000)
+});
+
 const storedConfigSchema = notificationConfigSchema.extend({
   upstreamServers: z.array(upstreamServerSchema).default([]),
   rules: z.array(policyRuleSchema).default([]),
-  toolNameMode: z.enum(["transparent", "prefixed"]).default("transparent")
+  toolNameMode: z.enum(["transparent", "prefixed"]).default("transparent"),
+  ai: aiConfigSchema.default({})
 });
 
 const yamlConfigSchema = z.object({
   notifications: notificationConfigSchema.partial().default({}),
   upstreams: z.array(upstreamServerSchema).default([]),
   rules: z.array(policyRuleSchema).default([]),
-  proxy: proxyConfigSchema.partial().default({})
+  proxy: proxyConfigSchema.partial().default({}),
+  ai: aiConfigSchema.partial().default({})
 });
 
 type StoredConfig = z.infer<typeof storedConfigSchema>;
@@ -152,6 +163,10 @@ function getEnvOverrides(): Partial<StoredConfig> {
     overrides.slackWebhookUrl = process.env.LATCHKEY_SLACK_WEBHOOK_URL;
   }
 
+  if (process.env.LATCHKEY_SLACK_SIGNING_SECRET) {
+    overrides.slackSigningSecret = process.env.LATCHKEY_SLACK_SIGNING_SECRET;
+  }
+
   if (process.env.LATCHKEY_RESEND_API_KEY) {
     overrides.resendApiKey = process.env.LATCHKEY_RESEND_API_KEY;
   }
@@ -178,6 +193,20 @@ function getEnvOverrides(): Partial<StoredConfig> {
 
   if (toolNameMode) {
     overrides.toolNameMode = toolNameMode;
+  }
+
+  const aiApiKey = process.env.LATCHKEY_AI_API_KEY ?? process.env.ANTHROPIC_API_KEY;
+  const aiModel = process.env.LATCHKEY_AI_MODEL;
+  const aiTimeoutMs = parseTimeout(process.env.LATCHKEY_AI_TIMEOUT_MS);
+
+  if (aiApiKey || aiModel || aiTimeoutMs !== undefined) {
+    const currentAi: Record<string, unknown> = (overrides.ai as Record<string, unknown> | undefined) ?? {};
+    overrides.ai = aiConfigSchema.parse({
+      ...currentAi,
+      ...(aiApiKey ? { apiKey: aiApiKey } : {}),
+      ...(aiModel ? { model: aiModel } : {}),
+      ...(aiTimeoutMs !== undefined ? { timeoutMs: aiTimeoutMs } : {})
+    });
   }
 
   return overrides;
@@ -214,13 +243,14 @@ function parseStoredConfig(data: unknown): StoredConfig {
   const normalizedInput = normalizeDeprecatedChannel(data);
   if (normalizedInput && typeof normalizedInput === "object") {
     const record = normalizedInput as Record<string, unknown>;
-    if ("notifications" in record || "upstreams" in record || "proxy" in record) {
+    if ("notifications" in record || "upstreams" in record || "proxy" in record || "ai" in record) {
       const parsed = yamlConfigSchema.parse(normalizedInput as YamlConfig);
       return storedConfigSchema.parse({
         ...parsed.notifications,
         upstreamServers: parsed.upstreams,
         rules: parsed.rules,
-        toolNameMode: parsed.proxy.toolNameMode ?? "transparent"
+        toolNameMode: parsed.proxy.toolNameMode ?? "transparent",
+        ai: parsed.ai
       });
     }
   }
@@ -243,6 +273,7 @@ function toYamlConfig(config: StoredConfig): YamlConfig {
     notifications: {
       channel: config.channel,
       ...(config.slackWebhookUrl ? { slackWebhookUrl: config.slackWebhookUrl } : {}),
+      ...(config.slackSigningSecret ? { slackSigningSecret: config.slackSigningSecret } : {}),
       ...(config.resendApiKey ? { resendApiKey: config.resendApiKey } : {}),
       ...(config.userEmail ? { userEmail: config.userEmail } : {}),
       ...(config.emailFrom ? { emailFrom: config.emailFrom } : {}),
@@ -254,7 +285,8 @@ function toYamlConfig(config: StoredConfig): YamlConfig {
     rules: config.rules,
     proxy: {
       toolNameMode: config.toolNameMode
-    }
+    },
+    ai: config.ai
   };
 }
 
@@ -356,6 +388,7 @@ function normalizeConfig(parsed: StoredConfig): LatchkeyConfig {
   return {
     channel: parsed.channel,
     slackWebhookUrl: parsed.slackWebhookUrl,
+    slackSigningSecret: parsed.slackSigningSecret,
     resendApiKey: parsed.resendApiKey,
     userEmail: parsed.userEmail,
     emailFrom: parsed.emailFrom,
@@ -371,8 +404,23 @@ function normalizeConfig(parsed: StoredConfig): LatchkeyConfig {
       approval: rule.approval,
       ...(rule.reason ? { reason: rule.reason } : {})
     })),
-    toolNameMode: parsed.toolNameMode
+    toolNameMode: parsed.toolNameMode,
+    ai: {
+      apiKey: parsed.ai.apiKey,
+      model: parsed.ai.model ?? "claude-haiku-4-5-20251001",
+      timeoutMs: parsed.ai.timeoutMs ?? 5000
+    }
   };
+}
+
+export function assertAIConfigured(config: LatchkeyConfig): void {
+  const key = config.ai.apiKey?.trim();
+  if (!key) {
+    throw new AIClassifierNotConfiguredError(
+      "Latchkey requires an Anthropic API key to start. " +
+        "Set ai.apiKey in latchkey.yaml, or export LATCHKEY_AI_API_KEY / ANTHROPIC_API_KEY in the environment."
+    );
+  }
 }
 
 export function loadConfig(configPath?: string): LatchkeyConfig {

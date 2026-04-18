@@ -1,10 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
+  AIClassifier,
   ApprovalService,
   PolicyEngine,
   RiskEngine,
   SQLiteApprovalStore,
+  assertAIConfigured,
   createNotificationService,
   loadConfig,
   loadSecurityRules
@@ -21,8 +23,14 @@ export async function startMcpProxyServer(
   options: StartMcpProxyServerOptions = {}
 ): Promise<void> {
   const config = options.configOverride ?? loadConfig(options.configPath);
+  assertAIConfigured(config);
+  const aiClassifier = new AIClassifier({
+    apiKey: config.ai.apiKey!,
+    model: config.ai.model,
+    timeoutMs: config.ai.timeoutMs
+  });
   const rules = loadSecurityRules(options.projectDir ?? process.cwd());
-  const riskEngine = new RiskEngine(rules);
+  const riskEngine = new RiskEngine(rules, aiClassifier);
   const policyEngine = new PolicyEngine(config.rules);
   const store = new SQLiteApprovalStore(config.databasePath);
   store.init();

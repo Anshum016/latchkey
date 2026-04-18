@@ -1,4 +1,16 @@
-import type { DimensionScore, RiskContext, RiskResult, SecurityRule } from "./types.js";
+import { AIClassifierNotConfiguredError } from "./ai-classifier.js";
+import type {
+  AIClassifierLike,
+  AIClassifierResult,
+  DimensionScore,
+  FusionStrategy,
+  HeuristicScoringResult,
+  RiskAction,
+  RiskContext,
+  RiskLevel,
+  RiskResult,
+  SecurityRule
+} from "./types.js";
 
 export const NOTIFY_THRESHOLD = 30;
 // Retained for compatibility: scores above this threshold are still "critical",
@@ -6,9 +18,54 @@ export const NOTIFY_THRESHOLD = 30;
 export const BLOCK_THRESHOLD = 65;
 const NORMALIZATION_DIVISOR = 65;
 
-export class RiskEngine {
-  public constructor(private readonly userRules: SecurityRule[] = []) {}
+function deriveLevel(score: number): RiskLevel {
+  if (score >= BLOCK_THRESHOLD) {
+    return "critical";
+  }
+  return score >= NOTIFY_THRESHOLD ? "high" : "low";
+}
 
+function deriveAction(score: number): RiskAction {
+  return score >= NOTIFY_THRESHOLD ? "notify" : "approve";
+}
+
+function buildHeuristicExplanation(dimensions: DimensionScore[]): string {
+  return (
+    dimensions
+      .filter((dimension) => dimension.score !== 0)
+      .sort((left, right) => Math.abs(right.score) - Math.abs(left.score))
+      .slice(0, 3)
+      .map((dimension) => `${dimension.reason} (${dimension.score > 0 ? "+" : ""}${dimension.score})`)
+      .join(" · ") || "Safe action"
+  );
+}
+
+export function fuseScores(
+  heuristic: HeuristicScoringResult,
+  ai: AIClassifierResult
+): { score: number; fusionStrategy: FusionStrategy } {
+  let final = Math.max(heuristic.score, ai.score);
+
+  if (heuristic.score >= 50 && ai.score >= 50) {
+    final = Math.min(100, final + 10);
+  }
+
+  if (heuristic.score < 30 && ai.score > 60) {
+    final = ai.score;
+  }
+
+  return { score: final, fusionStrategy: "max_with_agreement" };
+}
+
+export class RiskEngine {
+  public constructor(
+    private readonly userRules: SecurityRule[] = [],
+    private readonly aiClassifier?: AIClassifierLike | undefined
+  ) {}
+
+  // Heuristic-only by design: scoreToolBase runs once at tool registration
+  // time to decide whether a tool needs approval plumbing. It is not a
+  // per-call decision and intentionally does NOT invoke the AI classifier.
   public scoreToolBase(toolName: string, payload: Record<string, unknown> = {}): number {
     const ctx: RiskContext = { toolName, payload };
     const rawTotal =
@@ -20,8 +77,35 @@ export class RiskEngine {
     return normalizeScore(rawTotal);
   }
 
-  public score(ctx: RiskContext): RiskResult {
-    const breakdown: DimensionScore[] = [
+  public async score(ctx: RiskContext): Promise<RiskResult> {
+    if (!this.aiClassifier) {
+      throw new AIClassifierNotConfiguredError(
+        "RiskEngine.score() requires an AIClassifier. Pass one to the RiskEngine constructor, or set ai.apiKey / LATCHKEY_AI_API_KEY / ANTHROPIC_API_KEY."
+      );
+    }
+
+    const heuristic = this.scoreHeuristically(ctx);
+    const ai = await this.aiClassifier.classify(ctx, heuristic);
+    const fused = fuseScores(heuristic, ai);
+
+    const baseExplanation = buildHeuristicExplanation(heuristic.dimensions);
+    const reasoning = ai.reasoning.trim();
+    const explanation = reasoning.length > 0 ? `${baseExplanation} · AI: ${reasoning}` : baseExplanation;
+
+    return {
+      score: fused.score,
+      level: deriveLevel(fused.score),
+      action: deriveAction(fused.score),
+      breakdown: heuristic.dimensions,
+      explanation,
+      heuristic,
+      ai,
+      fusionStrategy: fused.fusionStrategy
+    };
+  }
+
+  private scoreHeuristically(ctx: RiskContext): HeuristicScoringResult {
+    const dimensions: DimensionScore[] = [
       calculateReversibility(ctx),
       calculateBlastRadius(ctx),
       calculateDataSensitivity(ctx),
@@ -33,7 +117,7 @@ export class RiskEngine {
     const payloadString = JSON.stringify(ctx.payload);
     for (const rule of this.userRules) {
       if (new RegExp(rule.pattern, "i").test(`${ctx.toolName} ${payloadString}`)) {
-        breakdown.push({
+        dimensions.push({
           dimension: `rule:${rule.reason}`,
           score: rule.scoreDelta,
           max: Math.abs(rule.scoreDelta),
@@ -42,19 +126,11 @@ export class RiskEngine {
       }
     }
 
-    const score = normalizeScore(breakdown.reduce((sum, dimension) => sum + dimension.score, 0));
+    const score = normalizeScore(dimensions.reduce((sum, dimension) => sum + dimension.score, 0));
     return {
       score,
-      level: score >= BLOCK_THRESHOLD ? "critical" : score >= NOTIFY_THRESHOLD ? "high" : "low",
-      action: score >= NOTIFY_THRESHOLD ? "notify" : "approve",
-      breakdown,
-      explanation:
-        breakdown
-          .filter((dimension) => dimension.score !== 0)
-          .sort((left, right) => Math.abs(right.score) - Math.abs(left.score))
-          .slice(0, 3)
-          .map((dimension) => `${dimension.reason} (${dimension.score > 0 ? "+" : ""}${dimension.score})`)
-          .join(" · ") || "Safe action"
+      tier: deriveLevel(score),
+      dimensions
     };
   }
 }

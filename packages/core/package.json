@@ -1,15 +1,69 @@
 {
   "name": "@latchkey/core",
   "version": "0.1.0",
+  "description": "Risk scoring and approval pipeline for MCP tool calls — shared kernel for Latchkey",
+  "license": "MIT",
   "type": "module",
   "main": "build/index.js",
   "types": "build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "default": "./build/index.js"
+    }
+  },
+  "files": [
+    "build/ai-classifier.js",
+    "build/ai-classifier.d.ts",
+    "build/ai-classifier.d.ts.map",
+    "build/approval-service.js",
+    "build/approval-service.d.ts",
+    "build/approval-service.d.ts.map",
+    "build/config.js",
+    "build/config.d.ts",
+    "build/config.d.ts.map",
+    "build/index.js",
+    "build/index.d.ts",
+    "build/index.d.ts.map",
+    "build/notification.js",
+    "build/notification.d.ts",
+    "build/notification.d.ts.map",
+    "build/policy-engine.js",
+    "build/policy-engine.d.ts",
+    "build/policy-engine.d.ts.map",
+    "build/policy.js",
+    "build/policy.d.ts",
+    "build/policy.d.ts.map",
+    "build/risk.js",
+    "build/risk.d.ts",
+    "build/risk.d.ts.map",
+    "build/storage.js",
+    "build/storage.d.ts",
+    "build/storage.d.ts.map",
+    "build/types.js",
+    "build/types.d.ts",
+    "build/types.d.ts.map"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "ai",
+    "agent",
+    "safety",
+    "approval",
+    "proxy",
+    "latchkey"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && node build/test.js"
+    "test": "tsc -p tsconfig.json && node build/test.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
     "@slack/webhook": "^7.0.8",
     "better-sqlite3": "^12.8.0",
     "resend": "^6.10.0",

@@ -1,19 +1,49 @@
 {
   "name": "@latchkey/mcp",
   "version": "0.1.0",
+  "description": "MCP proxy that intercepts dangerous AI agent tool calls and routes them for human approval via Slack or email",
+  "license": "MIT",
   "type": "module",
   "main": "build/mcp-entry.js",
   "types": "build/mcp-entry.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/mcp-entry.d.ts",
+      "default": "./build/mcp-entry.js"
+    }
+  },
+  "files": [
+    "build/cli/",
+    "build/runtime/",
+    "build/mcp-entry.js",
+    "build/mcp-entry.d.ts",
+    "build/mcp-entry.d.ts.map"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "ai",
+    "agent",
+    "safety",
+    "approval",
+    "proxy",
+    "claude",
+    "latchkey"
+  ],
   "bin": {
     "latchkey": "build/cli/latchkey.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && node build/runtime-test.js"
+    "test": "tsc -p tsconfig.json && node build/runtime-test.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@latchkey/core": "file:../core",
+    "@latchkey/core": "^0.1.0",
+    "@latchkey/webhook": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^3.25.76"
   }

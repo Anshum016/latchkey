@@ -137,20 +137,29 @@ async function handleProtectedToolCall(
   session: SessionState,
   options: BuildProxyToolsOptions
 ): Promise<CallToolResult> {
-  const heuristicRisk = options.riskEngine.score({
-    toolName,
-    payload: params,
-    sessionTask: session.task,
-    callCount: session.callCounts[toolName] ?? 0,
-    sessionAgeMs: Date.now() - session.startTime
-  });
   const policyContext = {
     toolName,
     upstreamName,
     params
   };
+
+  let risk;
+  try {
+    const fusedRisk = await options.riskEngine.score({
+      toolName,
+      payload: params,
+      sessionTask: session.task,
+      callCount: session.callCounts[toolName] ?? 0,
+      sessionAgeMs: Date.now() - session.startTime
+    });
+    risk = options.policyEngine.applyToRisk(policyContext, fusedRisk);
+  } catch (error) {
+    return createToolError(
+      `Latchkey denied ${toolName}: risk classification failed — ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+
   const policyEvaluation = options.policyEngine.evaluate(policyContext);
-  const risk = options.policyEngine.applyToRisk(policyContext, heuristicRisk);
 
   const outcome = await options.approvalService.executeWithApproval({
     toolName,

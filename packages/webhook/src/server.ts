@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { Server } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,32 @@ import {
 } from "@latchkey/core";
 
 dotenv.config();
+
+const rawBodies = new WeakMap<object, Buffer>();
+
+function isSlackSignatureValid(req: express.Request, signingSecret: string): boolean {
+  const signature = req.headers["x-slack-signature"];
+  const timestamp = req.headers["x-slack-request-timestamp"];
+  const rawBody = rawBodies.get(req);
+
+  if (typeof signature !== "string" || typeof timestamp !== "string" || !rawBody) {
+    return false;
+  }
+
+  const ageSeconds = Math.abs(Date.now() / 1000 - Number(timestamp));
+  if (ageSeconds > 300) {
+    return false;
+  }
+
+  const sigBase = `v0:${timestamp}:${rawBody.toString()}`;
+  const expected = `v0=${crypto.createHmac("sha256", signingSecret).update(sigBase).digest("hex")}`;
+
+  try {
+    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  } catch {
+    return false;
+  }
+}
 
 export interface StartWebhookServerOptions {
   port?: number;
@@ -35,13 +62,25 @@ export async function startWebhookServer(
   const app = express();
   app.use(cors());
   app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  app.use(
+    express.urlencoded({
+      extended: true,
+      verify: (req: express.Request, _res: express.Response, buf: Buffer) => {
+        rawBodies.set(req, buf);
+      }
+    } as Parameters<typeof express.urlencoded>[0])
+  );
 
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", service: "latchkey-webhook", time: new Date().toISOString() });
   });
 
   app.post("/webhook/slack", (req, res) => {
+    if (config.slackSigningSecret && !isSlackSignatureValid(req, config.slackSigningSecret)) {
+      res.status(401).json({ error: "Invalid Slack signature." });
+      return;
+    }
+
     try {
       const payload = JSON.parse(String(req.body.payload ?? "{}")) as {
         actions?: Array<{ action_id?: string; value?: string }>;
