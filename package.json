@@ -1,6 +1,6 @@
 {
   "name": "latchkey-proxy",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "MCP proxy server that intercepts dangerous AI agent tool calls for human approval via Slack or email",
   "license": "MIT",
   "type": "module",
