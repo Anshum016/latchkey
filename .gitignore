@@ -14,5 +14,10 @@ email-test.yaml
 # Internal dev/learning artifacts
 contract-note.txt
 prompt.md
-docs/latchkey-architecture.drawio
+docs/
 scripts/latchkey-claude-launcher.mjs
+scripts/email-approval-test.mjs
+
+# AI coding assistant instructions
+CLAUDE.md
+prompt.md
