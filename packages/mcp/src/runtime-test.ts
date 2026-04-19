@@ -310,6 +310,30 @@ async function run(): Promise<void> {
     assert.deepEqual(result, []);
   });
 
+  test("readMcpServersFromConfig collects from all projects when cwd does not match", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "latchkey-cfg-"));
+    const filePath = path.join(tmp, ".claude.json");
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        projects: {
+          "/some/other/project": {
+            mcpServers: { serverA: { command: "npx", args: ["-y", "server-a"] } }
+          },
+          "/yet/another/project": {
+            mcpServers: { serverB: { command: "npx", args: ["-y", "server-b"] } }
+          }
+        }
+      })
+    );
+    // process.cwd() won't match either key, so all-projects fallback kicks in
+    const result = readMcpServersFromConfig(filePath);
+    assert.equal(result.length, 2);
+    assert.ok(result.find((s) => s.name === "serverA"));
+    assert.ok(result.find((s) => s.name === "serverB"));
+    fs.rmSync(tmp, { recursive: true });
+  });
+
   console.log(`\n${passed} MCP runtime tests passed.`);
 }
 

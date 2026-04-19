@@ -191,9 +191,39 @@ export function readMcpServersFromConfig(filePath: string): DiscoveredMcpServer[
     return [];
   }
 
+  const record = raw as Record<string, unknown>;
+
   // ~/.claude.json style — has a "projects" key, not top-level "mcpServers"
-  if ("projects" in (raw as Record<string, unknown>)) {
-    return readMcpServersFromClaudeJson(resolved, process.cwd());
+  if ("projects" in record) {
+    // Try the current working directory first
+    const cwdServers = readMcpServersFromClaudeJson(resolved, process.cwd());
+    if (cwdServers.length > 0) {
+      return cwdServers;
+    }
+
+    // cwd didn't match any project key — collect from all projects (dedup by name)
+    const projects = record.projects;
+    if (!projects || typeof projects !== "object" || Array.isArray(projects)) {
+      return [];
+    }
+    const seen = new Set<string>();
+    const all: DiscoveredMcpServer[] = [];
+    for (const projectConfig of Object.values(projects as Record<string, unknown>)) {
+      if (!projectConfig || typeof projectConfig !== "object" || Array.isArray(projectConfig)) {
+        continue;
+      }
+      const mcpServers = (projectConfig as Record<string, unknown>).mcpServers;
+      if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
+        continue;
+      }
+      for (const server of extractServers(mcpServers as Record<string, unknown>)) {
+        if (!seen.has(server.name)) {
+          seen.add(server.name);
+          all.push(server);
+        }
+      }
+    }
+    return all;
   }
 
   // Flat style — settings.json, claude_desktop_config.json, .mcp.json

@@ -210,9 +210,14 @@ function installClaudeCodeConfig(configPath: string): string {
     fs.mkdirSync(directory, { recursive: true });
   }
 
-  const existing: ClaudeCodeSettings = fs.existsSync(settingsPath)
-    ? (JSON.parse(fs.readFileSync(settingsPath, "utf-8")) as ClaudeCodeSettings)
-    : {};
+  let existing: ClaudeCodeSettings = {};
+  if (fs.existsSync(settingsPath)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(settingsPath, "utf-8")) as ClaudeCodeSettings;
+    } catch {
+      console.warn(`  Warning: ${settingsPath} has invalid JSON — overwriting with fresh config.`);
+    }
+  }
 
   const absoluteConfigPath = path.resolve(configPath);
   const mcpServers = existing.mcpServers ?? {};
@@ -233,9 +238,14 @@ function installClaudeDesktopConfig(configPath: string): string {
     fs.mkdirSync(directory, { recursive: true });
   }
 
-  const existing = fs.existsSync(claudeConfigPath)
-    ? (JSON.parse(fs.readFileSync(claudeConfigPath, "utf-8")) as ClaudeDesktopConfig)
-    : {};
+  let existing: ClaudeDesktopConfig = {};
+  if (fs.existsSync(claudeConfigPath)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(claudeConfigPath, "utf-8")) as ClaudeDesktopConfig;
+    } catch {
+      console.warn(`  Warning: ${claudeConfigPath} has invalid JSON — overwriting with fresh config.`);
+    }
+  }
 
   const absoluteConfigPath = path.resolve(configPath);
   const mcpServers = existing.mcpServers ?? {};
