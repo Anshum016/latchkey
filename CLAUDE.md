@@ -40,7 +40,7 @@ npm run build --workspace @latchkey/mcp
 npm run build --workspace @latchkey/webhook
 
 npm run test --workspace @latchkey/core      # builds then runs build/test.js        (23 tests)
-npm run test --workspace @latchkey/mcp       # builds then runs build/runtime-test.js (21 tests)
+npm run test --workspace @latchkey/mcp       # builds then runs build/runtime-test.js (20 tests)
 npm run test --workspace @latchkey/webhook   # builds then runs build/test.js         (5 tests)
 
 npm run test:email-approval                  # manual email approval flow (scripts/email-approval-test.mjs)
@@ -82,8 +82,8 @@ packages/webhook/   @latchkey/webhook  - Express webhook receiver (latchkey-webh
 - Session state (`task`, `callCounts`, `startTime`) is a single in-memory object shared across all concurrent calls — not per-connection isolated.
 - `latchkey_set_task` is a synthetic tool always registered on the proxy so agents can declare their current task.
 - CLI (`cli/latchkey.ts`): `start | serve | init | setup | doctor | validate | status | approve <token-or-code> <allow|deny> | score <tool-name> [--params '{}']`
-- `cli/mcp-discovery.ts` — **MCP server discovery with four-level priority**: (1) `~/.claude.json → projects[cwd].mcpServers` (Claude Code project-level, via `discoverClaudeCodeProjectServers()` / `readMcpServersFromClaudeJson(filePath, projectDir)`), (2) `~/.claude/settings.json` (Claude Code user-level), (3) Claude Desktop config, (4) none. `discoverMcpServers()` walks this priority and returns the first non-empty result with a `DiscoverySource` tag (`"claude-code-project" | "claude-code" | "claude-desktop" | "none"`). Path helpers: `getClaudeJsonPath()`, `getClaudeCodeSettingsPath()`, `getClaudeDesktopConfigPath()`. Removal helpers: `removeServersFromClaudeCodeProjectConfig()`, `removeServersFromClaudeCodeConfig()`, `removeServersFromClaudeDesktopConfig()`. Project-key matching normalises `\` → `/` and lowercases both sides for cross-platform safety. `FILTER_NAMES = ["latchkey", "latchkey-proxy"]` is applied everywhere to prevent recursive proxying. All reads are resilient — missing file, invalid JSON, missing keys, and malformed entries all return `[]`.
-- `cli/setup.ts` (the `latchkey-proxy init` wizard): uses `discoverMcpServers()` from `mcp-discovery.ts`; shows "Claude Code (project)", "Claude Code", or "Claude Desktop" in prompts depending on where servers were found; removes wrapped servers from the correct source config (project-level, user-level, or Desktop); writes `latchkey-proxy` entry to Claude Desktop config and/or `~/.claude/settings.json`
+- `cli/mcp-discovery.ts` — **no auto-discovery**; exposes only explicit file-reading utilities. Readers: `readMcpServersFromFile(filePath)` for flat `{ mcpServers: {...} }` format; `readMcpServersFromClaudeJson(filePath, projectDir)` for nested `{ projects: { "<path>": { mcpServers } } }` format; `readMcpServersFromConfig(userPath)` (used by setup wizard) — resolves `~`, detects format by presence of a `projects` key, delegates to the appropriate reader. Removal helpers: `removeServersFromFile()`, `removeServersFromClaudeJson()`, `removeServersFromConfig()` (auto-detects format). Path helpers retained for the install step only: `getClaudeCodeSettingsPath()`, `getClaudeDesktopConfigPath()`. `FILTER_NAMES = ["latchkey", "latchkey-proxy"]` applied everywhere. All reads return `[]` for missing file, invalid JSON, missing keys, or malformed entries.
+- `cli/setup.ts` (the `latchkey-proxy init` wizard): prompts the user for an explicit MCP config file path (default `~/.claude.json`); calls `readMcpServersFromConfig(path)` to load servers; presents them for selection; calls `removeServersFromConfig(path, names)` to remove wrapped servers from the source file; writes the `latchkey-proxy` entry to Claude Desktop config and/or `~/.claude/settings.json`
 
 **`@latchkey/webhook`** (`server.ts`):
 - Express app; port defaults to `3001` or `$PORT`

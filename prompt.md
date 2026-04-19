@@ -1,127 +1,52 @@
-You need to modify the Latchkey MCP discovery logic so it correctly discovers MCP servers configured by Claude Code.
+Read CLAUDE.md completely before touching any file.
 
-IMPORTANT CONTEXT
+Then read these files carefully:
 
-Currently our discovery logic only reads MCP servers from:
-1. ~/.claude/settings.json
-2. Claude Desktop config
+- packages/mcp/src/cli/mcp-discovery.ts
+- packages/mcp/src/cli/setup.ts
+- packages/mcp/src/cli/latchkey.ts
 
-However, Claude Code also stores MCP server configuration inside the file:
+Understand the existing discovery flow completely before writing any code.
 
-~/.claude.json
-
-Inside this file, MCP servers are often stored under a project-specific structure:
-
-{
-  "projects": {
-    "<project-path>": {
-      "mcpServers": {
-        "server-name": {
-          "type": "stdio",
-          "command": "...",
-          "args": [...]
-        }
-      }
-    }
-  }
-}
-
-Example:
-
-projects["C:/Users/anshu/OneDrive/Desktop/latchkey"].mcpServers.drawio
-
-Claude Code loads MCP servers from this location when a project is opened.
-
-OUR CURRENT PROBLEM
-
-Latchkey currently cannot discover MCP servers that are stored inside ~/.claude.json under projects[].mcpServers.
-
-Therefore our proxy fails to detect upstream MCP servers when users configure them via Claude Code's built-in MCP UI.
+--------------------------------------------
 
 GOAL
 
-Extend the discovery system so Latchkey can:
+We are simplifying the architecture of Latchkey.
 
-1. Locate ~/.claude.json
-2. Parse the file safely
-3. Identify the current project path
-4. Extract MCP servers defined under:
+Latchkey must NO LONGER auto-discover MCP servers.
 
-projects[currentProjectPath].mcpServers
+All automatic discovery mechanisms must be removed.
 
-5. Normalize those servers into our internal upstream format
-6. Allow them to be wrapped by Latchkey
+Instead, the user must explicitly provide the configuration file path that contains the MCP servers.
 
-IMPORTANT REQUIREMENTS
+This path can be something like:
 
-1. This must NOT break the current discovery logic.
-2. The discovery priority should be:
+- .mcp.json
+- claude_desktop_config.json
+- ~/.claude.json
 
-   a) Claude Code project config (~/.claude.json → projects[currentProjectPath].mcpServers)
-   b) Claude Code user config (~/.claude/settings.json)
-   c) Claude Desktop config
-   d) manual configuration
+But Latchkey will not search for these automatically anymore.
 
-3. Handle path normalization because project keys may appear as:
+The user must always provide the path during `latchkey-proxy init`.
 
-   C:\Users\...
-   or
-   C:/Users/...
+--------------------------------------------
 
-4. Only extract valid MCP servers with:
-   command
-   args
+DESIGN CHANGE
 
-5. Ignore:
-   latchkey
-   latchkey-proxy
-   or any server that would cause recursive proxying.
+Current behavior:
+Latchkey tries to discover MCP servers automatically using multiple strategies:
 
-6. The new logic should live in:
+- Claude Code project scope (~/.claude.json)
+- Claude Code user scope (~/.claude/settings.json)
+- Claude Desktop config
+- .mcp.json in project directory
 
-packages/mcp/src/cli/mcp-discovery.ts
+This entire discovery system must be removed.
 
-7. Add a new function:
+New behavior:
 
-discoverClaudeCodeProjectServers()
+Latchkey should only read MCP servers from a path explicitly provided by the user.
 
-which:
+--------------------------------------------
 
-- reads ~/.claude.json
-- determines the current project directory
-- extracts mcpServers
-- returns normalized server configs
-
-8. Integrate this function into the existing:
-
-discoverMcpServers()
-
-so project-level servers are discovered first.
-
-9. Add robust error handling:
-
-- file missing
-- invalid JSON
-- project not found
-- missing mcpServers
-- malformed server configs
-
-10. Add unit tests for:
-
-- project path match
-- slash normalization
-- missing file
-- missing project
-- malformed server entries
-- filtering latchkey
-
-EXPECTED OUTPUT
-
-Implement the code changes required for this feature.
-
-Modify only the necessary files and keep the architecture clean.
-
-Explain:
-- what changes were made
-- why they are safe
-- how discovery order now works

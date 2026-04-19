@@ -6,12 +6,9 @@ import { jsonSchemaToZodShape } from "./runtime/json-schema.js";
 import { RiskEngine } from "@latchkey/core";
 import { buildDockerRunArgs, buildUpstreamTransportConfig } from "./runtime/upstream.js";
 import {
-  getClaudeCodeSettingsPath,
-  getClaudeDesktopConfigPath,
-  getClaudeJsonPath,
   readMcpServersFromFile,
   readMcpServersFromClaudeJson,
-  discoverMcpServers
+  readMcpServersFromConfig
 } from "./cli/mcp-discovery.js";
 
 async function run(): Promise<void> {
@@ -94,24 +91,8 @@ async function run(): Promise<void> {
   });
 
   // -----------------------------------------------------------------------
-  // MCP discovery tests
+  // readMcpServersFromFile — flat { mcpServers: {...} } format
   // -----------------------------------------------------------------------
-
-  test("getClaudeCodeSettingsPath resolves under home dir via os.homedir()", () => {
-    const p = getClaudeCodeSettingsPath();
-    assert.ok(p.startsWith(os.homedir()), `expected path under homedir, got: ${p}`);
-    assert.ok(p.includes(".claude"), `expected .claude in path, got: ${p}`);
-    assert.ok(p.endsWith("settings.json"));
-  });
-
-  test("getClaudeDesktopConfigPath resolves cross-platform without hardcoded usernames", () => {
-    const p = getClaudeDesktopConfigPath();
-    assert.ok(
-      p.startsWith(os.homedir()) || p.toLowerCase().includes("appdata"),
-      `expected path under homedir or AppData, got: ${p}`
-    );
-    assert.ok(p.endsWith("claude_desktop_config.json"));
-  });
 
   test("readMcpServersFromFile returns empty array for nonexistent file", () => {
     const result = readMcpServersFromFile(path.join(os.tmpdir(), "__nonexistent__", "settings.json"));
@@ -142,14 +123,15 @@ async function run(): Promise<void> {
     fs.rmSync(tmp, { recursive: true });
   });
 
-  test("readMcpServersFromFile filters latchkey and returns valid servers with env", () => {
+  test("readMcpServersFromFile filters latchkey and latchkey-proxy, returns valid servers with env", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "latchkey-disc-"));
     const filePath = path.join(tmp, "settings.json");
     fs.writeFileSync(
       filePath,
       JSON.stringify({
         mcpServers: {
-          latchkey: { command: "latchkey", args: ["start"] },
+          latchkey: { command: "latchkey-proxy", args: ["start"] },
+          "latchkey-proxy": { command: "latchkey-proxy", args: ["start"] },
           filesystem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
           demo: { command: "uv", args: ["run", "demo.py"], env: { KEY: "val" } }
         }
@@ -159,6 +141,7 @@ async function run(): Promise<void> {
     assert.equal(result.length, 2);
     assert.ok(result.find((s) => s.name === "filesystem"));
     assert.ok(!result.find((s) => s.name === "latchkey"));
+    assert.ok(!result.find((s) => s.name === "latchkey-proxy"));
     const demo = result.find((s) => s.name === "demo");
     assert.deepEqual(demo?.env, { KEY: "val" });
     fs.rmSync(tmp, { recursive: true });
@@ -183,21 +166,9 @@ async function run(): Promise<void> {
     fs.rmSync(tmp, { recursive: true });
   });
 
-  test("discoverMcpServers returns a valid DiscoveryResult without throwing", () => {
-    const result = discoverMcpServers();
-    assert.ok(["claude-code-project", "claude-code", "claude-desktop", "none"].includes(result.source));
-    assert.ok(Array.isArray(result.servers));
-  });
-
   // -----------------------------------------------------------------------
-  // ~/.claude.json project-level discovery tests
+  // readMcpServersFromClaudeJson — nested { projects: { path: { mcpServers } } }
   // -----------------------------------------------------------------------
-
-  test("getClaudeJsonPath resolves to ~/.claude.json", () => {
-    const p = getClaudeJsonPath();
-    assert.ok(p.startsWith(os.homedir()), `expected path under homedir, got: ${p}`);
-    assert.ok(p.endsWith(".claude.json"), `expected .claude.json suffix, got: ${p}`);
-  });
 
   test("readMcpServersFromClaudeJson returns [] for missing file", () => {
     const result = readMcpServersFromClaudeJson(
@@ -226,7 +197,6 @@ async function run(): Promise<void> {
   test("readMcpServersFromClaudeJson matches project key with forward-slash normalization", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "latchkey-cj-"));
     const filePath = path.join(tmp, ".claude.json");
-    // Key stored with backslashes, lookup uses forward slashes (or vice-versa)
     fs.writeFileSync(
       filePath,
       JSON.stringify({
@@ -297,6 +267,47 @@ async function run(): Promise<void> {
     fs.writeFileSync(filePath, JSON.stringify({ projects: { "/my/project": { someOtherKey: true } } }));
     assert.deepEqual(readMcpServersFromClaudeJson(filePath, "/my/project"), []);
     fs.rmSync(tmp, { recursive: true });
+  });
+
+  // -----------------------------------------------------------------------
+  // readMcpServersFromConfig — smart reader used by setup wizard
+  // -----------------------------------------------------------------------
+
+  test("readMcpServersFromConfig reads from flat mcpServers file", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "latchkey-cfg-"));
+    const filePath = path.join(tmp, ".mcp.json");
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({ mcpServers: { myserver: { command: "npx", args: ["-y", "my-mcp"] } } })
+    );
+    const result = readMcpServersFromConfig(filePath);
+    assert.equal(result.length, 1);
+    assert.equal(result[0]?.name, "myserver");
+    fs.rmSync(tmp, { recursive: true });
+  });
+
+  test("readMcpServersFromConfig reads from nested .claude.json format using cwd", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "latchkey-cfg-"));
+    const filePath = path.join(tmp, ".claude.json");
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        projects: {
+          [process.cwd()]: {
+            mcpServers: { myserver: { command: "npx", args: ["-y", "my-mcp"] } }
+          }
+        }
+      })
+    );
+    const result = readMcpServersFromConfig(filePath);
+    assert.equal(result.length, 1);
+    assert.equal(result[0]?.name, "myserver");
+    fs.rmSync(tmp, { recursive: true });
+  });
+
+  test("readMcpServersFromConfig returns [] for missing file", () => {
+    const result = readMcpServersFromConfig(path.join(os.tmpdir(), "__nonexistent__", ".mcp.json"));
+    assert.deepEqual(result, []);
   });
 
   console.log(`\n${passed} MCP runtime tests passed.`);

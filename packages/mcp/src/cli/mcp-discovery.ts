@@ -9,23 +9,12 @@ export interface DiscoveredMcpServer {
   env?: Record<string, string> | undefined;
 }
 
-export type DiscoverySource = "claude-code-project" | "claude-code" | "claude-desktop" | "none";
-
-export interface DiscoveryResult {
-  servers: DiscoveredMcpServer[];
-  source: DiscoverySource;
-}
-
-// Names that must never be wrapped (would cause recursive proxying)
+// Names that must never be wrapped — would cause recursive proxying
 const FILTER_NAMES = ["latchkey", "latchkey-proxy"];
 
 // ---------------------------------------------------------------------------
-// Path resolution — dynamic, cross-platform, no hardcoded usernames
+// Path helpers (used by setup.ts install functions, not for auto-discovery)
 // ---------------------------------------------------------------------------
-
-export function getClaudeJsonPath(): string {
-  return path.join(os.homedir(), ".claude.json");
-}
 
 export function getClaudeCodeSettingsPath(): string {
   return path.join(os.homedir(), ".claude", "settings.json");
@@ -47,134 +36,13 @@ export function getClaudeDesktopConfigPath(): string {
 }
 
 // ---------------------------------------------------------------------------
-// File reading — separated from path resolution, resilient to all error cases
+// Shared entry extraction (used by both flat and nested readers)
 // ---------------------------------------------------------------------------
 
-/**
- * Reads MCP server entries from any settings/config JSON file.
- * Exported so tests can call it with arbitrary temp-file paths.
- * Returns [] gracefully for: missing file, invalid JSON, missing mcpServers,
- * malformed entries, or permission errors.
- */
-export function readMcpServersFromFile(
-  filePath: string,
-  filterNames: string[] = FILTER_NAMES
-): DiscoveredMcpServer[] {
-  if (!fs.existsSync(filePath)) {
-    return [];
-  }
-
-  let raw: unknown;
-  try {
-    raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-  } catch {
-    console.warn(`  Warning: ${filePath} contains invalid JSON — skipping MCP server discovery from this source.`);
-    return [];
-  }
-
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return [];
-  }
-
-  const record = raw as Record<string, unknown>;
-  const mcpServers = record.mcpServers;
-
-  if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
-    return [];
-  }
-
+function extractServers(mcpServers: Record<string, unknown>): DiscoveredMcpServer[] {
   const servers: DiscoveredMcpServer[] = [];
-  for (const [name, cfg] of Object.entries(mcpServers as Record<string, unknown>)) {
-    if (filterNames.includes(name)) {
-      continue;
-    }
-    if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
-      continue;
-    }
 
-    const entry = cfg as Record<string, unknown>;
-    const command = typeof entry.command === "string" ? entry.command : null;
-    if (!command) {
-      continue;
-    }
-
-    const args = Array.isArray(entry.args)
-      ? entry.args.filter((a): a is string => typeof a === "string")
-      : [];
-
-    const rawEnv = entry.env;
-    const env =
-      rawEnv && typeof rawEnv === "object" && !Array.isArray(rawEnv)
-        ? (rawEnv as Record<string, string>)
-        : undefined;
-
-    servers.push({ name, command, args, ...(env ? { env } : {}) });
-  }
-
-  return servers;
-}
-
-// Normalise path separators and case for cross-platform key matching
-function normalizePath(p: string): string {
-  return p.replace(/\\/g, "/").toLowerCase();
-}
-
-/**
- * Reads MCP servers for a specific project from ~/.claude.json.
- * Exported so tests can inject an arbitrary file path and project dir.
- * Returns [] for: missing file, invalid JSON, project not found, malformed entries.
- */
-export function readMcpServersFromClaudeJson(
-  filePath: string,
-  projectDir: string
-): DiscoveredMcpServer[] {
-  if (!fs.existsSync(filePath)) {
-    return [];
-  }
-
-  let raw: unknown;
-  try {
-    raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-  } catch {
-    console.warn(`  Warning: ${filePath} contains invalid JSON — skipping project MCP server discovery.`);
-    return [];
-  }
-
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return [];
-  }
-
-  const record = raw as Record<string, unknown>;
-  const projects = record.projects;
-  if (!projects || typeof projects !== "object" || Array.isArray(projects)) {
-    return [];
-  }
-
-  const projectsMap = projects as Record<string, unknown>;
-  const normalizedTarget = normalizePath(projectDir);
-
-  // Match project key regardless of whether slashes are \ or /
-  const matchingKey = Object.keys(projectsMap).find(
-    (key) => normalizePath(key) === normalizedTarget
-  );
-
-  if (!matchingKey) {
-    return [];
-  }
-
-  const projectConfig = projectsMap[matchingKey];
-  if (!projectConfig || typeof projectConfig !== "object" || Array.isArray(projectConfig)) {
-    return [];
-  }
-
-  const projectRecord = projectConfig as Record<string, unknown>;
-  const mcpServers = projectRecord.mcpServers;
-  if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
-    return [];
-  }
-
-  const servers: DiscoveredMcpServer[] = [];
-  for (const [name, cfg] of Object.entries(mcpServers as Record<string, unknown>)) {
+  for (const [name, cfg] of Object.entries(mcpServers)) {
     if (FILTER_NAMES.includes(name)) {
       continue;
     }
@@ -204,49 +72,139 @@ export function readMcpServersFromClaudeJson(
   return servers;
 }
 
-export function discoverClaudeCodeProjectServers(projectDir?: string): DiscoveredMcpServer[] {
-  return readMcpServersFromClaudeJson(getClaudeJsonPath(), projectDir ?? process.cwd());
-}
-
-export function readClaudeCodeMcpServers(): DiscoveredMcpServer[] {
-  return readMcpServersFromFile(getClaudeCodeSettingsPath());
-}
-
-export function readClaudeDesktopMcpServers(): DiscoveredMcpServer[] {
-  return readMcpServersFromFile(getClaudeDesktopConfigPath());
-}
-
 // ---------------------------------------------------------------------------
-// Discovery with explicit priority
+// Flat reader — { mcpServers: { ... } }
+// Exported so tests can call it with arbitrary temp-file paths.
 // ---------------------------------------------------------------------------
 
-export function discoverMcpServers(): DiscoveryResult {
-  // 1. Claude Code project-level config (~/.claude.json → projects[cwd].mcpServers)
-  const projectServers = discoverClaudeCodeProjectServers();
-  if (projectServers.length > 0) {
-    return { servers: projectServers, source: "claude-code-project" };
+export function readMcpServersFromFile(filePath: string): DiscoveredMcpServer[] {
+  if (!fs.existsSync(filePath)) {
+    return [];
   }
 
-  // 2. Claude Code user-level config (~/.claude/settings.json)
-  const claudeCodeServers = readClaudeCodeMcpServers();
-  if (claudeCodeServers.length > 0) {
-    return { servers: claudeCodeServers, source: "claude-code" };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  } catch {
+    console.warn(`  Warning: ${filePath} contains invalid JSON — skipping.`);
+    return [];
   }
 
-  // 3. Claude Desktop (fallback for users who haven't migrated or use both)
-  const claudeDesktopServers = readClaudeDesktopMcpServers();
-  if (claudeDesktopServers.length > 0) {
-    return { servers: claudeDesktopServers, source: "claude-desktop" };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return [];
   }
 
-  return { servers: [], source: "none" };
+  const record = raw as Record<string, unknown>;
+  const mcpServers = record.mcpServers;
+
+  if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
+    return [];
+  }
+
+  return extractServers(mcpServers as Record<string, unknown>);
 }
 
 // ---------------------------------------------------------------------------
-// Removal helpers — write back to the correct config after wrapping
+// Nested reader — { projects: { "<path>": { mcpServers: { ... } } } }
+// Exported so tests can call it with arbitrary temp-file paths.
 // ---------------------------------------------------------------------------
 
-function removeServersFromConfigFile(filePath: string, names: string[]): void {
+function normalizePath(p: string): string {
+  return p.replace(/\\/g, "/").toLowerCase();
+}
+
+export function readMcpServersFromClaudeJson(
+  filePath: string,
+  projectDir: string
+): DiscoveredMcpServer[] {
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  } catch {
+    console.warn(`  Warning: ${filePath} contains invalid JSON — skipping project MCP server discovery.`);
+    return [];
+  }
+
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return [];
+  }
+
+  const record = raw as Record<string, unknown>;
+  const projects = record.projects;
+
+  if (!projects || typeof projects !== "object" || Array.isArray(projects)) {
+    return [];
+  }
+
+  const projectsMap = projects as Record<string, unknown>;
+  const normalizedTarget = normalizePath(projectDir);
+
+  // Match regardless of whether keys use \ or /
+  const matchingKey = Object.keys(projectsMap).find(
+    (key) => normalizePath(key) === normalizedTarget
+  );
+
+  if (!matchingKey) {
+    return [];
+  }
+
+  const projectConfig = projectsMap[matchingKey];
+  if (!projectConfig || typeof projectConfig !== "object" || Array.isArray(projectConfig)) {
+    return [];
+  }
+
+  const mcpServers = (projectConfig as Record<string, unknown>).mcpServers;
+  if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
+    return [];
+  }
+
+  return extractServers(mcpServers as Record<string, unknown>);
+}
+
+// ---------------------------------------------------------------------------
+// Smart reader — resolves ~ and auto-detects flat vs nested format.
+// This is what the setup wizard calls with the user-provided path.
+// ---------------------------------------------------------------------------
+
+export function readMcpServersFromConfig(filePath: string): DiscoveredMcpServer[] {
+  const resolved = filePath.startsWith("~")
+    ? path.join(os.homedir(), filePath.slice(1))
+    : path.resolve(filePath);
+
+  if (!fs.existsSync(resolved)) {
+    return [];
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(resolved, "utf-8"));
+  } catch {
+    console.warn(`  Warning: ${resolved} contains invalid JSON.`);
+    return [];
+  }
+
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return [];
+  }
+
+  // ~/.claude.json style — has a "projects" key, not top-level "mcpServers"
+  if ("projects" in (raw as Record<string, unknown>)) {
+    return readMcpServersFromClaudeJson(resolved, process.cwd());
+  }
+
+  // Flat style — settings.json, claude_desktop_config.json, .mcp.json
+  return readMcpServersFromFile(resolved);
+}
+
+// ---------------------------------------------------------------------------
+// Removal helpers — write back to the config file after wrapping
+// ---------------------------------------------------------------------------
+
+export function removeServersFromFile(filePath: string, names: string[]): void {
   if (!fs.existsSync(filePath) || names.length === 0) {
     return;
   }
@@ -265,19 +223,11 @@ function removeServersFromConfigFile(filePath: string, names: string[]): void {
   }
 }
 
-export function removeServersFromClaudeCodeConfig(names: string[]): void {
-  removeServersFromConfigFile(getClaudeCodeSettingsPath(), names);
-}
-
-export function removeServersFromClaudeDesktopConfig(names: string[]): void {
-  removeServersFromConfigFile(getClaudeDesktopConfigPath(), names);
-}
-
-export function removeServersFromClaudeCodeProjectConfig(
+export function removeServersFromClaudeJson(
+  filePath: string,
   names: string[],
   projectDir?: string
 ): void {
-  const filePath = getClaudeJsonPath();
   if (!fs.existsSync(filePath) || names.length === 0) {
     return;
   }
@@ -309,15 +259,39 @@ export function removeServersFromClaudeCodeProjectConfig(
 
     const updated = {
       ...raw,
-      projects: {
-        ...projects,
-        [matchingKey]: { ...projectConfig, mcpServers }
-      }
+      projects: { ...projects, [matchingKey]: { ...projectConfig, mcpServers } }
     };
     fs.writeFileSync(filePath, `${JSON.stringify(updated, null, 2)}\n`, "utf-8");
   } catch (error) {
     console.warn(
       `  Warning: could not update ${filePath}: ${error instanceof Error ? error.message : String(error)}`
     );
+  }
+}
+
+/**
+ * Removes servers from a user-provided config file.
+ * Detects flat vs nested format automatically.
+ */
+export function removeServersFromConfig(filePath: string, names: string[]): void {
+  if (!fs.existsSync(filePath) || names.length === 0) {
+    return;
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  } catch {
+    return;
+  }
+
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return;
+  }
+
+  if ("projects" in (raw as Record<string, unknown>)) {
+    removeServersFromClaudeJson(filePath, names);
+  } else {
+    removeServersFromFile(filePath, names);
   }
 }

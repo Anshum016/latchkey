@@ -12,13 +12,10 @@ import type {
 } from "@latchkey/core";
 import {
   type DiscoveredMcpServer,
-  type DiscoverySource,
-  discoverMcpServers,
   getClaudeCodeSettingsPath,
   getClaudeDesktopConfigPath,
-  removeServersFromClaudeCodeConfig,
-  removeServersFromClaudeDesktopConfig,
-  removeServersFromClaudeCodeProjectConfig
+  readMcpServersFromConfig,
+  removeServersFromConfig
 } from "./mcp-discovery.js";
 
 interface ClaudeDesktopConfig {
@@ -106,15 +103,13 @@ async function configureUpstreams(
   rl: readline.Interface,
   existing: UpstreamServerConfig[],
   discovered: DiscoveredMcpServer[],
-  discoverySource: DiscoverySource
+  configFileName: string
 ): Promise<{ upstreams: UpstreamServerConfig[]; removeFromSource: string[] }> {
-  const sourceName =
-    discoverySource === "claude-code-project" ? "Claude Code (project)" :
-    discoverySource === "claude-code" ? "Claude Code" : "Claude Desktop";
+  const sourceName = configFileName;
 
   if (discovered.length === 0) {
     if (existing.length === 0) {
-      console.log("\nNo MCP servers found in Claude Code or Claude Desktop. Configuring manually.");
+      console.log(`\nNo MCP servers found in ${configFileName}. Configuring manually.`);
     }
     return { upstreams: await configurePrimaryUpstream(rl, existing), removeFromSource: [] };
   }
@@ -368,13 +363,17 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
       existing.channel
     );
 
-    // Claude Code is the primary source; Claude Desktop is the fallback
-    const { servers: discovered, source: discoverySource } = discoverMcpServers();
+    // User explicitly provides the config file that contains their MCP servers
+    const mcpConfigPath = (
+      await ask(rl, "Path to MCP config file containing your servers (e.g. ~/.claude.json, .mcp.json)", "~/.claude.json")
+    ).trim();
+    const discovered = mcpConfigPath ? readMcpServersFromConfig(mcpConfigPath) : [];
+    const configFileName = mcpConfigPath ? path.basename(mcpConfigPath) : "config";
     const { upstreams: upstreamServers, removeFromSource } = await configureUpstreams(
       rl,
       existing.upstreamServers,
       discovered,
-      discoverySource
+      configFileName
     );
 
     const defaultProtectedUpstream = getDefaultProtectedUpstream(upstreamServers, existing.rules);
@@ -433,14 +432,8 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
     const claudeConfigPath = installClaude ? installClaudeDesktopConfig(configPath) : null;
     const claudeCodeConfigPath = installClaudeCode ? installClaudeCodeConfig(configPath) : null;
 
-    if (removeFromSource.length > 0) {
-      if (discoverySource === "claude-code-project") {
-        removeServersFromClaudeCodeProjectConfig(removeFromSource);
-      } else if (discoverySource === "claude-code") {
-        removeServersFromClaudeCodeConfig(removeFromSource);
-      } else if (discoverySource === "claude-desktop") {
-        removeServersFromClaudeDesktopConfig(removeFromSource);
-      }
+    if (removeFromSource.length > 0 && mcpConfigPath) {
+      removeServersFromConfig(mcpConfigPath, removeFromSource);
     }
 
     console.log("\nSaved configuration:");
@@ -459,10 +452,7 @@ export async function runSetup(configPath = getDefaultConfigPath()): Promise<voi
     }
 
     if (removeFromSource.length > 0) {
-      const sourceLabel =
-        discoverySource === "claude-code-project" ? "Claude Code (project)" :
-        discoverySource === "claude-code" ? "Claude Code" : "Claude Desktop";
-      console.log(`  Removed from ${sourceLabel}: ${removeFromSource.join(", ")}`);
+      console.log(`  Removed from ${configFileName}: ${removeFromSource.join(", ")}`);
     }
 
     console.log("\nNext steps:");
