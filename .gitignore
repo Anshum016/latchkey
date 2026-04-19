@@ -1,4 +1,18 @@
 node_modules/
 bin/
 packages/*/build/
+packages/*/dist/
 *.tgz
+
+# Personal configs and credentials
+latchkey.yaml
+email-test.yaml
+
+# Local editor settings
+.claude/
+
+# Internal dev/learning artifacts
+contract-note.txt
+prompt.md
+docs/latchkey-architecture.drawio
+scripts/latchkey-claude-launcher.mjs
